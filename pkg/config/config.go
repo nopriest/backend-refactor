@@ -90,7 +90,7 @@ func LoadConfig() *Config {
 	config.GitHubClientID = os.Getenv("GITHUB_CLIENT_ID")
 	config.GitHubClientSecret = os.Getenv("GITHUB_CLIENT_SECRET")
 	config.OAuthRedirectURI = os.Getenv("OAUTH_REDIRECT_URI")
-	config.BaseURL = getEnvWithDefault("BASE_URL", "https://tap.ejento.xyz")
+	config.BaseURL = os.Getenv("BASE_URL")
 
 	// CORS配置
 	allowedOrigins := getEnvWithDefault("ALLOWED_ORIGINS", "*")
