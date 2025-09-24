@@ -1,5 +1,7 @@
--- 初始化数据库脚本
 -- 用于创建基础表结构和测试数据
+
+-- Required for gen_random_uuid()
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- 创建用户表
 CREATE TABLE IF NOT EXISTS users (
@@ -83,10 +85,11 @@ CREATE INDEX IF NOT EXISTS idx_user_subscriptions_user_id ON user_subscriptions(
 CREATE INDEX IF NOT EXISTS idx_ai_credits_user_id ON ai_credits(user_id);
 
 -- 插入测试数据
-INSERT INTO users (id, email, name, tier, created_at, updated_at) 
+-- Seed a test user with a valid bcrypt hash using pgcrypto
+INSERT INTO users (email, password_hash, name, tier, created_at, updated_at) 
 VALUES (
-    'test-user-123', 
-    'test@example.com', 
+    'test@example.com',
+    crypt('password', gen_salt('bf', 10)),
     'Test User', 
     'free',
     NOW() - INTERVAL '30 days',
@@ -102,13 +105,16 @@ VALUES
 ON CONFLICT DO NOTHING;
 
 -- 创建更新时间触发器函数
+-- Some GUI runners mishandle $$-quoted bodies; use E'' quoting
 CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS E'
 BEGIN
-    NEW.updated_at = NOW();
+    NEW.updated_at := NOW();
     RETURN NEW;
 END;
-$$ language 'plpgsql';
+';
 
 -- 为所有表创建更新时间触发器
 DROP TRIGGER IF EXISTS update_users_updated_at ON users;
