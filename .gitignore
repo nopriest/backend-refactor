@@ -1,1 +1,48 @@
-.vercel
+########################################
+# Project: backend-refactor (.gitignore)
+# Goal: ignore env secrets, build outputs,
+#       OS/IDE noise, logs & temp files.
+########################################
+
+# Vercel project link/cache
+.vercel/
+
+# Environment files (keep only examples/schemas)
+.env
+.env.*
+!.env.example
+!.env.schema
+
+# Logs and debugging
+*.log
+debug.log
+
+# Go build artifacts
+bin/
+build/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.*
+*.coverprofile
+
+# Local data/temp/cache
+data/
+tmp/
+.cache/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# IDE/editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*.tmp
