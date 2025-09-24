@@ -1,11 +1,12 @@
 package config
 
 import (
-	"bufio"
-	"fmt"
-	"os"
-	"strconv"
-	"strings"
+    "bufio"
+    "fmt"
+    "os"
+    "strconv"
+    "strings"
+    "sync"
 )
 
 // Config 应用配置结构
@@ -73,9 +74,10 @@ func LoadConfig() *Config {
 	}
 
 	// 数据库配置
-	config.PostgresDSN = os.Getenv("POSTGRES_DSN")
-	config.SupabaseURL = os.Getenv("SUPABASE_URL")
-	config.SupabaseKey = os.Getenv("SUPABASE_SERVICE_KEY")
+    // Trim whitespace to avoid trailing spaces/newlines from env sources
+    config.PostgresDSN = strings.TrimSpace(os.Getenv("POSTGRES_DSN"))
+    config.SupabaseURL = strings.TrimSpace(os.Getenv("SUPABASE_URL"))
+    config.SupabaseKey = strings.TrimSpace(os.Getenv("SUPABASE_SERVICE_KEY"))
 
 	// Paddle配置
 	config.PaddleAPIKey = os.Getenv("PADDLE_API_KEY")
@@ -85,12 +87,12 @@ func LoadConfig() *Config {
 	config.PaddlePowerPriceID = os.Getenv("PADDLE_POWER_PRICE_ID")
 
 	// OAuth配置
-	config.GoogleClientID = os.Getenv("GOOGLE_CLIENT_ID")
-	config.GoogleClientSecret = os.Getenv("GOOGLE_CLIENT_SECRET")
-	config.GitHubClientID = os.Getenv("GITHUB_CLIENT_ID")
-	config.GitHubClientSecret = os.Getenv("GITHUB_CLIENT_SECRET")
-	config.OAuthRedirectURI = os.Getenv("OAUTH_REDIRECT_URI")
-	config.BaseURL = os.Getenv("BASE_URL")
+    config.GoogleClientID = strings.TrimSpace(os.Getenv("GOOGLE_CLIENT_ID"))
+    config.GoogleClientSecret = strings.TrimSpace(os.Getenv("GOOGLE_CLIENT_SECRET"))
+    config.GitHubClientID = strings.TrimSpace(os.Getenv("GITHUB_CLIENT_ID"))
+    config.GitHubClientSecret = strings.TrimSpace(os.Getenv("GITHUB_CLIENT_SECRET"))
+    config.OAuthRedirectURI = strings.TrimSpace(os.Getenv("OAUTH_REDIRECT_URI"))
+    config.BaseURL = strings.TrimSpace(os.Getenv("BASE_URL"))
 
 	// CORS配置
 	allowedOrigins := getEnvWithDefault("ALLOWED_ORIGINS", "*")
@@ -114,6 +116,22 @@ func LoadConfig() *Config {
 	}
 
 	return config
+}
+
+// Cached config (initialized once per cold start)
+var (
+    cachedConfig *Config
+    configOnce   sync.Once
+)
+
+// GetCached returns the process-wide cached Config.
+// On serverless (Vercel), it initializes once per cold start and
+// reuses it across warm invocations, avoiding per-request parsing.
+func GetCached() *Config {
+    configOnce.Do(func() {
+        cachedConfig = LoadConfig()
+    })
+    return cachedConfig
 }
 
 // Validate 验证配置

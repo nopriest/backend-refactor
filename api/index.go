@@ -19,7 +19,7 @@ import (
 // 这个函数实现了"单体路由模式"，将所有API端点集中在一个Chi路由器中管理
 func Handler(w http.ResponseWriter, r *http.Request) {
 	// 加载配置
-	cfg := config.LoadConfig()
+	cfg := config.GetCached()
 
 	// 验证配置
 	if err := cfg.Validate(); err != nil {
@@ -55,6 +55,8 @@ func setupMiddleware(router *chi.Mux, cfg *config.Config) {
 	// 基础中间件
 	router.Use(middleware.RequestID)
 	router.Use(middleware.RealIP)
+	// Normalize path and restore scheme/host before logging and routing
+	router.Use(customMiddleware.Normalize())
 	router.Use(customMiddleware.Logger(cfg))
 	router.Use(middleware.Recoverer)
 
@@ -173,6 +175,24 @@ func setupRoutes(router *chi.Mux, cfg *config.Config, db database.DatabaseInterf
 			})
 
 			// 快照管理路由
+			// Organizations & Spaces
+			orgsHandler := handlers.NewOrgsHandler(cfg, db)
+			r.Route("/orgs", func(r chi.Router) {
+				r.Get("/", orgsHandler.ListMyOrganizations)
+				r.Post("/", orgsHandler.CreateOrganization)
+				r.Get("/members", orgsHandler.ListMembers) // expects ?org_id=
+				r.Get("/spaces", orgsHandler.ListSpaces)   // expects ?org_id=
+				r.Post("/spaces", orgsHandler.CreateSpace)
+				r.Post("/invite", orgsHandler.InviteMember)
+				r.Put("/spaces/permissions", orgsHandler.SetSpacePermission)
+			})
+
+			// Invitations
+			r.Route("/invitations", func(r chi.Router) {
+				r.Get("/my", orgsHandler.ListMyInvitations)
+				r.Post("/accept", orgsHandler.AcceptInvitation)
+			})
+
 			r.Route("/snapshots", func(r chi.Router) {
 				r.Get("/", snapshotHandler.ListSnapshots)           // 列出快照
 				r.Post("/", snapshotHandler.CreateSnapshot)         // 创建快照

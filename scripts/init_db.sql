@@ -125,3 +125,88 @@ CREATE TRIGGER update_user_subscriptions_updated_at BEFORE UPDATE ON user_subscr
 
 DROP TRIGGER IF EXISTS update_ai_credits_updated_at ON ai_credits;
 CREATE TRIGGER update_ai_credits_updated_at BEFORE UPDATE ON ai_credits FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- =============================
+-- Organizations & Spaces schema
+-- =============================
+
+-- Organizations
+CREATE TABLE IF NOT EXISTS organizations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    description TEXT,
+    avatar TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Organization memberships (owner/admin/member)
+CREATE TABLE IF NOT EXISTS organization_memberships (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role VARCHAR(20) NOT NULL DEFAULT 'member',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(organization_id, user_id)
+);
+
+-- Spaces (browsable by all members by default)
+CREATE TABLE IF NOT EXISTS spaces (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    is_default BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Space permissions (per-member edit control)
+CREATE TABLE IF NOT EXISTS space_permissions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    space_id UUID NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    can_edit BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(space_id, user_id)
+);
+
+-- Invitations
+CREATE TABLE IF NOT EXISTS organization_invitations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    email VARCHAR(255) NOT NULL,
+    inviter_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token VARCHAR(255) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    accepted_by UUID NULL REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(token)
+);
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_organizations_owner ON organizations(owner_id);
+CREATE INDEX IF NOT EXISTS idx_memberships_user ON organization_memberships(user_id);
+CREATE INDEX IF NOT EXISTS idx_memberships_org ON organization_memberships(organization_id);
+CREATE INDEX IF NOT EXISTS idx_spaces_org ON spaces(organization_id);
+CREATE INDEX IF NOT EXISTS idx_space_permissions_space ON space_permissions(space_id);
+CREATE INDEX IF NOT EXISTS idx_space_permissions_user ON space_permissions(user_id);
+CREATE INDEX IF NOT EXISTS idx_invitations_email ON organization_invitations(email);
+CREATE INDEX IF NOT EXISTS idx_invitations_org ON organization_invitations(organization_id);
+
+-- Triggers for updated_at
+DROP TRIGGER IF EXISTS update_organizations_updated_at ON organizations;
+CREATE TRIGGER update_organizations_updated_at BEFORE UPDATE ON organizations FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_spaces_updated_at ON spaces;
+CREATE TRIGGER update_spaces_updated_at BEFORE UPDATE ON spaces FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_space_permissions_updated_at ON space_permissions;
+CREATE TRIGGER update_space_permissions_updated_at BEFORE UPDATE ON space_permissions FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_org_invitations_updated_at ON organization_invitations;
+CREATE TRIGGER update_org_invitations_updated_at BEFORE UPDATE ON organization_invitations FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

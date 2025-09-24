@@ -419,7 +419,7 @@ func (h *AuthHandler) handleGoogleOAuthFlow(w http.ResponseWriter, r *http.Reque
 
 	// 1. 使用授权码换取访问令牌
 	fmt.Printf("🔄 Exchanging Google authorization code for access token...\n")
-	accessToken, err := h.exchangeGoogleCode(code)
+    accessToken, err := h.exchangeGoogleCodeVerbose(code)
 	if err != nil {
 		fmt.Printf("❌ Failed to exchange Google code: %v\n", err)
 		h.handleOAuthError(w, r, clientType, "token_exchange_failed", "Failed to exchange code for token: "+err.Error())
@@ -639,6 +639,59 @@ func (h *AuthHandler) exchangeGoogleCode(code string) (string, error) {
 
 	fmt.Printf("✅ Successfully obtained access token from Google\n")
 	return tokenResp.AccessToken, nil
+}
+
+// exchangeGoogleCodeVerbose 和 exchangeGoogleCode 行为一致，但增加更详细的响应体/提示日志，便于本地排查
+func (h *AuthHandler) exchangeGoogleCodeVerbose(code string) (string, error) {
+    data := url.Values{}
+    data.Set("client_id", h.config.GoogleClientID)
+    data.Set("client_secret", h.config.GoogleClientSecret)
+    data.Set("code", code)
+    data.Set("grant_type", "authorization_code")
+    data.Set("redirect_uri", h.config.OAuthRedirectURI)
+
+    fmt.Printf("?? Exchanging code with Google OAuth (verbose)\n")
+    if len(h.config.GoogleClientID) >= 8 {
+        fmt.Printf("   - Client ID: %s...\n", h.config.GoogleClientID[:8])
+    } else {
+        fmt.Printf("   - Client ID: %s\n", h.config.GoogleClientID)
+    }
+    fmt.Printf("   - Redirect URI: %s\n", h.config.OAuthRedirectURI)
+    fmt.Printf("   - Code length: %d\n", len(code))
+
+    resp, err := http.PostForm("https://oauth2.googleapis.com/token", data)
+    if err != nil { return "", fmt.Errorf("failed to exchange code: %w", err) }
+    defer resp.Body.Close()
+
+    fmt.Printf("?? Google OAuth response status: %d\n", resp.StatusCode)
+    if ct := resp.Header.Get("Content-Type"); ct != "" { fmt.Printf("   - Content-Type: %s\n", ct) }
+    if v := resp.Header.Get("Date"); v != "" { fmt.Printf("   - Date: %s\n", v) }
+
+    body, _ := io.ReadAll(resp.Body)
+    if resp.StatusCode != http.StatusOK {
+        msg := string(body)
+        fmt.Printf("❌ Google OAuth error response (%d): %s\n", resp.StatusCode, msg)
+        lower := strings.ToLower(msg)
+        if strings.Contains(lower, "redirect_uri_mismatch") {
+            fmt.Printf("💡 Hint: Check OAUTH_REDIRECT_URI and Google Console Authorized redirect URIs.\n")
+        }
+        if strings.Contains(lower, "invalid_client") {
+            fmt.Printf("💡 Hint: Check GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET.\n")
+        }
+        if strings.Contains(lower, "invalid_grant") {
+            fmt.Printf("💡 Hint: Code reused/expired or redirect_uri mismatch; re-initiate OAuth and ensure exact match.\n")
+        }
+        return "", fmt.Errorf("Google token exchange failed: %s", msg)
+    }
+
+    if len(body) == 0 { return "", fmt.Errorf("empty token response from Google") }
+    var tokenResp GoogleTokenResponse
+    if err := json.Unmarshal(body, &tokenResp); err != nil {
+        fmt.Printf("❌ Failed to decode Google token JSON. Raw: %s\n", string(body))
+        return "", fmt.Errorf("failed to decode token response: %w", err)
+    }
+    fmt.Printf("✅ Successfully obtained access token from Google\n")
+    return tokenResp.AccessToken, nil
 }
 
 // getGoogleUserInfo 使用访问令牌获取用户信息
@@ -1045,9 +1098,9 @@ func (h *AuthHandler) handleWebClientError(w http.ResponseWriter, r *http.Reques
 // getFrontendCallbackURL 获取前端回调URL
 func (h *AuthHandler) getFrontendCallbackURL() string {
 	// 从环境变量获取前端回调URL，支持多种客户端类型
-	if frontendURL := os.Getenv("FRONTEND_CALLBACK_URL"); frontendURL != "" {
-		return frontendURL
-	}
+    if frontendURL := os.Getenv("FRONTEND_CALLBACK_URL"); frontendURL != "" {
+        return strings.TrimSpace(frontendURL)
+    }
 
 	// 默认使用Chrome扩展的回调页面
 	// Chrome扩展使用 chrome-extension:// 协议，但这里我们返回一个通用的本地页面

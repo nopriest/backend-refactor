@@ -8,21 +8,41 @@ import (
 
 // DatabaseInterface 定义数据库操作接口
 type DatabaseInterface interface {
-	// 用户管理
-	CreateUser(user *models.User) error
-	GetUserByEmail(email string) (*models.User, error)
-	GetUserByID(id string) (*models.User, error)
-	UpdateUser(user *models.User) error
-	DeleteUser(id string) error
+    // 用户管理
+    CreateUser(user *models.User) error
+    GetUserByEmail(email string) (*models.User, error)
+    GetUserByID(id string) (*models.User, error)
+    UpdateUser(user *models.User) error
+    DeleteUser(id string) error
 
-	// 用户订阅信息
-	GetUserWithSubscription(userID string) (*models.UserWithSubscription, error)
+    // 用户订阅信息
+    GetUserWithSubscription(userID string) (*models.UserWithSubscription, error)
 
-	// 快照管理
-	SaveSnapshot(userID, name string, tabGroups []models.TabGroup) error
-	ListSnapshots(userID string) ([]SnapshotInfo, error)
-	LoadSnapshot(userID, name string) (*LoadSnapshotResponse, error)
-	DeleteSnapshot(userID, name string) error
+    // Organizations & Memberships
+    CreateOrganization(org *models.Organization) error
+    ListUserOrganizations(userID string) ([]models.Organization, error)
+    GetOrganization(orgID string) (*models.Organization, error)
+    AddOrganizationMember(m *models.OrganizationMembership) error
+    ListOrganizationMembers(orgID string) ([]models.OrganizationMembership, error)
+
+    // Spaces
+    CreateSpace(space *models.Space) error
+    ListSpacesByOrganization(orgID string) ([]models.Space, error)
+    UpdateSpace(space *models.Space) error
+    SetSpacePermission(spaceID, userID string, canEdit bool) error
+    GetSpacePermissions(spaceID string) ([]models.SpacePermission, error)
+
+    // Invitations
+    CreateInvitation(inv *models.OrganizationInvitation) error
+    GetInvitationByToken(token string) (*models.OrganizationInvitation, error)
+    ListInvitationsByEmail(email string) ([]models.OrganizationInvitation, error)
+    UpdateInvitation(inv *models.OrganizationInvitation) error
+
+    // 快照管理
+    SaveSnapshot(userID, name string, tabGroups []models.TabGroup) error
+    ListSnapshots(userID string) ([]SnapshotInfo, error)
+    LoadSnapshot(userID, name string) (*LoadSnapshotResponse, error)
+    DeleteSnapshot(userID, name string) error
 
 	// 订阅管理
 	CreateSubscription(subscription *models.UserSubscription) error

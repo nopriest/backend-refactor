@@ -124,6 +124,183 @@ func (db *SupabaseDatabase) makeRequestWithHeaders(method, endpoint string, body
 	return respBody, nil
 }
 
+// ================= Organizations & Spaces & Invitations =================
+
+// Organizations
+func (db *SupabaseDatabase) CreateOrganization(org *models.Organization) error {
+    payload := map[string]interface{}{
+        "name":        org.Name,
+        "owner_id":    org.OwnerID,
+        "description": org.Description,
+        "avatar":      org.Avatar,
+    }
+    data, err := db.makeRequest("POST", "/organizations", payload)
+    if err != nil { return err }
+    var rows []map[string]interface{}
+    if err := json.Unmarshal(data, &rows); err == nil && len(rows) > 0 {
+        if id, ok := rows[0]["id"].(string); ok { org.ID = id }
+    }
+    // owner membership
+    _, err = db.makeRequest("POST", "/organization_memberships", map[string]interface{}{
+        "organization_id": org.ID,
+        "user_id":         org.OwnerID,
+        "role":            "owner",
+    })
+    return err
+}
+
+func (db *SupabaseDatabase) ListUserOrganizations(userID string) ([]models.Organization, error) {
+    // filter by owner or membership; do two queries and merge
+    ownedData, err := db.makeRequest("GET", "/organizations?owner_id=eq."+userID+"&select=*", nil)
+    if err != nil { return nil, err }
+    var owned []models.Organization
+    _ = json.Unmarshal(ownedData, &owned)
+
+    memData, err := db.makeRequest("GET", "/organization_memberships?user_id=eq."+userID+"&select=organization_id", nil)
+    if err != nil { return owned, nil }
+    var mems []map[string]string
+    _ = json.Unmarshal(memData, &mems)
+    orgIDs := map[string]bool{}
+    for _, o := range owned { orgIDs[o.ID] = true }
+    for _, m := range mems { if id, ok := m["organization_id"]; ok { orgIDs[id] = true } }
+    // fetch orgs by ids
+    var result []models.Organization
+    for id := range orgIDs {
+        data, err := db.makeRequest("GET", "/organizations?id=eq."+id+"&select=*", nil)
+        if err == nil {
+            var tmp []models.Organization
+            if json.Unmarshal(data, &tmp) == nil && len(tmp) > 0 {
+                result = append(result, tmp[0])
+            }
+        }
+    }
+    return result, nil
+}
+
+func (db *SupabaseDatabase) GetOrganization(orgID string) (*models.Organization, error) {
+    data, err := db.makeRequest("GET", "/organizations?id=eq."+orgID+"&select=*", nil)
+    if err != nil { return nil, err }
+    var rows []models.Organization
+    if err := json.Unmarshal(data, &rows); err != nil || len(rows) == 0 { return nil, fmt.Errorf("organization not found") }
+    return &rows[0], nil
+}
+
+func (db *SupabaseDatabase) AddOrganizationMember(m *models.OrganizationMembership) error {
+    payload := map[string]interface{}{
+        "organization_id": m.OrganizationID,
+        "user_id":         m.UserID,
+        "role":            string(m.Role),
+    }
+    _, err := db.makeRequest("POST", "/organization_memberships", payload)
+    return err
+}
+
+func (db *SupabaseDatabase) ListOrganizationMembers(orgID string) ([]models.OrganizationMembership, error) {
+    data, err := db.makeRequest("GET", "/organization_memberships?organization_id=eq."+orgID+"&select=*", nil)
+    if err != nil { return nil, err }
+    var rows []models.OrganizationMembership
+    if err := json.Unmarshal(data, &rows); err != nil { return nil, err }
+    return rows, nil
+}
+
+// Spaces
+func (db *SupabaseDatabase) CreateSpace(space *models.Space) error {
+    payload := map[string]interface{}{
+        "organization_id": space.OrganizationID,
+        "name":            space.Name,
+        "description":     space.Description,
+        "is_default":      space.IsDefault,
+    }
+    data, err := db.makeRequest("POST", "/spaces", payload)
+    if err != nil { return err }
+    var rows []map[string]interface{}
+    if err := json.Unmarshal(data, &rows); err == nil && len(rows) > 0 {
+        if id, ok := rows[0]["id"].(string); ok { space.ID = id }
+    }
+    return nil
+}
+
+func (db *SupabaseDatabase) ListSpacesByOrganization(orgID string) ([]models.Space, error) {
+    data, err := db.makeRequest("GET", "/spaces?organization_id=eq."+orgID+"&select=*", nil)
+    if err != nil { return nil, err }
+    var rows []models.Space
+    if err := json.Unmarshal(data, &rows); err != nil { return nil, err }
+    return rows, nil
+}
+
+func (db *SupabaseDatabase) UpdateSpace(space *models.Space) error {
+    _, err := db.makeRequest("PATCH", "/spaces?id=eq."+space.ID, map[string]interface{}{
+        "name":        space.Name,
+        "description": space.Description,
+        "is_default":  space.IsDefault,
+    })
+    return err
+}
+
+func (db *SupabaseDatabase) SetSpacePermission(spaceID, userID string, canEdit bool) error {
+    // upsert-like: first try patch, if none affected then insert
+    _, err := db.makeRequestWithHeaders("PATCH", "/space_permissions?space_id=eq."+spaceID+"&user_id=eq."+userID, map[string]interface{}{"can_edit": canEdit}, map[string]string{"Prefer": "return=representation"})
+    if err != nil {
+        _, err = db.makeRequest("POST", "/space_permissions", map[string]interface{}{
+            "space_id": spaceID,
+            "user_id":  userID,
+            "can_edit": canEdit,
+        })
+    }
+    return err
+}
+
+func (db *SupabaseDatabase) GetSpacePermissions(spaceID string) ([]models.SpacePermission, error) {
+    data, err := db.makeRequest("GET", "/space_permissions?space_id=eq."+spaceID+"&select=*", nil)
+    if err != nil { return nil, err }
+    var rows []models.SpacePermission
+    if err := json.Unmarshal(data, &rows); err != nil { return nil, err }
+    return rows, nil
+}
+
+// Invitations
+func (db *SupabaseDatabase) CreateInvitation(inv *models.OrganizationInvitation) error {
+    payload := map[string]interface{}{
+        "organization_id": inv.OrganizationID,
+        "email":           inv.Email,
+        "inviter_id":      inv.InviterID,
+        "token":           inv.Token,
+        "status":          string(inv.Status),
+        "expires_at":      inv.ExpiresAt.Format(time.RFC3339),
+    }
+    data, err := db.makeRequest("POST", "/organization_invitations", payload)
+    if err != nil { return err }
+    var rows []map[string]interface{}
+    if err := json.Unmarshal(data, &rows); err == nil && len(rows) > 0 {
+        if id, ok := rows[0]["id"].(string); ok { inv.ID = id }
+    }
+    return nil
+}
+
+func (db *SupabaseDatabase) GetInvitationByToken(token string) (*models.OrganizationInvitation, error) {
+    data, err := db.makeRequest("GET", "/organization_invitations?token=eq."+token+"&select=*", nil)
+    if err != nil { return nil, err }
+    var rows []models.OrganizationInvitation
+    if err := json.Unmarshal(data, &rows); err != nil || len(rows) == 0 { return nil, fmt.Errorf("invitation not found") }
+    return &rows[0], nil
+}
+
+func (db *SupabaseDatabase) ListInvitationsByEmail(email string) ([]models.OrganizationInvitation, error) {
+    data, err := db.makeRequest("GET", "/organization_invitations?email=eq."+email+"&select=*", nil)
+    if err != nil { return nil, err }
+    var rows []models.OrganizationInvitation
+    if err := json.Unmarshal(data, &rows); err != nil { return nil, err }
+    return rows, nil
+}
+
+func (db *SupabaseDatabase) UpdateInvitation(inv *models.OrganizationInvitation) error {
+    _, err := db.makeRequest("PATCH", "/organization_invitations?id=eq."+inv.ID, map[string]interface{}{
+        "status":     string(inv.Status),
+        "accepted_by": inv.AcceptedBy,
+        "expires_at":  inv.ExpiresAt.Format(time.RFC3339),
+    })
+    return err
+}
 // CreateUser 创建用户
 func (db *SupabaseDatabase) CreateUser(user *models.User) error {
 	// 使用所有可用字段 - 不包含id字段，让PostgreSQL自动生成UUID
