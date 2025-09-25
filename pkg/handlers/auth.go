@@ -20,8 +20,40 @@ import (
 
 // AuthHandler 认证处理器
 type AuthHandler struct {
-	config *config.Config
-	db     database.DatabaseInterface
+    config *config.Config
+    db     database.DatabaseInterface
+}
+
+// ensureDefaultOrgAndSpace ensures the user has at least one organization and a default space.
+// Returns the organization ID if created or existing, otherwise empty string on failure.
+func (h *AuthHandler) ensureDefaultOrgAndSpace(user *models.User) (string, error) {
+    if user == nil || user.ID == "" {
+        return "", fmt.Errorf("invalid user")
+    }
+    // Check existing orgs
+    orgs, err := h.db.ListUserOrganizations(user.ID)
+    if err == nil && len(orgs) > 0 {
+        return orgs[0].ID, nil
+    }
+    // Create a default org
+    displayName := user.Name
+    if strings.TrimSpace(displayName) == "" {
+        parts := strings.Split(user.Email, "@")
+        if len(parts) > 0 { displayName = parts[0] }
+    }
+    org := &models.Organization{
+        Name:        fmt.Sprintf("%s's Space", displayName),
+        Description: "Default organization",
+        OwnerID:     user.ID,
+        CreatedAt:   time.Now(),
+        UpdatedAt:   time.Now(),
+    }
+    if err := h.db.CreateOrganization(org); err != nil {
+        return "", err
+    }
+    // Create a default space (best-effort)
+    _ = h.db.CreateSpace(&models.Space{ OrganizationID: org.ID, Name: "General", Description: "Default space", IsDefault: true })
+    return org.ID, nil
 }
 
 // GoogleUser Google用户信息结构
@@ -127,8 +159,29 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 // RefreshToken 刷新令牌
 func (h *AuthHandler) RefreshToken(w http.ResponseWriter, r *http.Request) {
-	utils.WriteErrorResponseWithCode(w, http.StatusNotImplemented, "NOT_IMPLEMENTED",
-		"Token refresh not yet implemented", "")
+    var req struct {
+        RefreshToken string `json:"refresh_token"`
+    }
+    if err := utils.ParseJSONBody(r, &req); err != nil {
+        utils.WriteBadRequestResponse(w, "Invalid request body")
+        return
+    }
+    if strings.TrimSpace(req.RefreshToken) == "" {
+        utils.WriteBadRequestResponse(w, "refresh_token is required")
+        return
+    }
+
+    jwtService := utils.NewJWTService(h.config.JWTSecret)
+    accessToken, expiresIn, err := jwtService.RefreshAccessToken(req.RefreshToken)
+    if err != nil {
+        utils.WriteUnauthorizedResponse(w, "Invalid or expired refresh token: "+err.Error())
+        return
+    }
+
+    utils.WriteSuccessResponse(w, map[string]interface{}{
+        "access_token": accessToken,
+        "expires_in":   expiresIn,
+    })
 }
 
 // Logout 用户登出
@@ -434,23 +487,26 @@ func (h *AuthHandler) handleGoogleOAuthFlow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// 3. 在数据库中查找或创建用户
-	user, err := h.findOrCreateUser(googleUser.Email, googleUser.Name, googleUser.Picture, "google")
-	if err != nil {
-		h.handleOAuthError(w, r, clientType, "user_creation_failed", "Failed to create user: "+err.Error())
-		return
-	}
+    // 3. 在数据库中查找或创建用户
+    user, err := h.findOrCreateUser(googleUser.Email, googleUser.Name, googleUser.Picture, "google")
+    if err != nil {
+        h.handleOAuthError(w, r, clientType, "user_creation_failed", "Failed to create user: "+err.Error())
+        return
+    }
 
-	// 4. 生成JWT令牌
-	jwtService := utils.NewJWTService(h.config.JWTSecret)
-	accessTokenJWT, refreshToken, expiresIn, err := jwtService.GenerateTokenPair(user.ID, user.Email)
-	if err != nil {
-		h.handleOAuthError(w, r, clientType, "token_generation_failed", "Failed to generate tokens: "+err.Error())
-		return
-	}
+    // 3.1 首次登录引导：若无任何组织，则创建默认组织和空间
+    orgID, _ := h.ensureDefaultOrgAndSpace(user)
 
-	// 5. 返回响应 - 根据客户端类型选择格式
-	h.handleOAuthSuccess(w, r, clientType, user, accessTokenJWT, refreshToken, expiresIn)
+    // 4. 生成JWT令牌
+    jwtService := utils.NewJWTService(h.config.JWTSecret)
+    accessTokenJWT, refreshToken, expiresIn, err := jwtService.GenerateTokenPair(user.ID, user.Email)
+    if err != nil {
+        h.handleOAuthError(w, r, clientType, "token_generation_failed", "Failed to generate tokens: "+err.Error())
+        return
+    }
+
+    // 5. 返回响应 - 根据客户端类型选择格式
+    h.handleOAuthSuccess(w, r, clientType, user, accessTokenJWT, refreshToken, expiresIn, orgID)
 }
 
 // handleGitHubOAuthFlow 处理GitHub OAuth流程
@@ -508,16 +564,19 @@ func (h *AuthHandler) handleGitHubOAuthFlow(w http.ResponseWriter, r *http.Reque
 		fmt.Printf("👤 Created new user %s via GitHub OAuth\n", user.Email)
 	}
 
-	// 5. 生成JWT令牌
-	jwtService := utils.NewJWTService(h.config.JWTSecret)
-	accessTokenJWT, refreshToken, expiresIn, err := jwtService.GenerateTokenPair(user.ID, user.Email)
-	if err != nil {
-		h.handleOAuthError(w, r, clientType, "token_generation_failed", "Failed to generate tokens: "+err.Error())
-		return
-	}
+    // 5. 生成JWT令牌
+    jwtService := utils.NewJWTService(h.config.JWTSecret)
+    accessTokenJWT, refreshToken, expiresIn, err := jwtService.GenerateTokenPair(user.ID, user.Email)
+    if err != nil {
+        h.handleOAuthError(w, r, clientType, "token_generation_failed", "Failed to generate tokens: "+err.Error())
+        return
+    }
 
-	// 6. 返回响应
-	h.handleOAuthSuccess(w, r, clientType, user, accessTokenJWT, refreshToken, expiresIn)
+    // 5.1 首次登录引导
+    orgID, _ := h.ensureDefaultOrgAndSpace(user)
+
+    // 6. 返回响应
+    h.handleOAuthSuccess(w, r, clientType, user, accessTokenJWT, refreshToken, expiresIn, orgID)
 }
 
 // GoogleOAuthCallback Google OAuth回调
@@ -591,14 +650,12 @@ func (h *AuthHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 
 // getDatabaseType 获取数据库类型
 func (h *AuthHandler) getDatabaseType() string {
-	if h.config.UseLocalDB {
-		return "local-file"
-	} else if h.config.PostgresDSN != "" {
-		return "postgresql"
-	} else if h.config.SupabaseURL != "" && h.config.SupabaseKey != "" {
-		return "supabase"
-	}
-	return "unknown"
+    if h.config.PostgresDSN != "" {
+        return "postgresql"
+    } else if h.config.SupabaseURL != "" && h.config.SupabaseKey != "" {
+        return "supabase"
+    }
+    return "unknown"
 }
 
 // exchangeGoogleCode 使用授权码换取访问令牌
@@ -770,17 +827,19 @@ func (h *AuthHandler) handleChromeExtensionSuccess(w http.ResponseWriter, r *htt
 	// 对于Chrome扩展，我们需要重定向到一个包含token信息的URL
 	// Chrome Identity API会捕获这个重定向URL并提取参数
 	// 使用一个特殊的回调URL格式，让前端能够解析
-	redirectURL := fmt.Sprintf("%s/api/oauth/extension/callback?success=true&access_token=%s&refresh_token=%s&expires_in=%d&user_id=%s&email=%s&name=%s&avatar=%s&provider=%s",
-		h.config.BaseURL,
-		accessToken,
-		refreshToken,
-		expiresIn,
-		user.ID,
-		user.Email,
-		url.QueryEscape(user.Name),
-		url.QueryEscape(user.Avatar),
-		user.Provider,
-	)
+    orgID, _ := h.ensureDefaultOrgAndSpace(user)
+    redirectURL := fmt.Sprintf("%s/api/oauth/extension/callback?success=true&access_token=%s&refresh_token=%s&expires_in=%d&user_id=%s&email=%s&name=%s&avatar=%s&provider=%s&org_id=%s",
+        h.config.BaseURL,
+        accessToken,
+        refreshToken,
+        expiresIn,
+        user.ID,
+        user.Email,
+        url.QueryEscape(user.Name),
+        url.QueryEscape(user.Avatar),
+        user.Provider,
+        orgID,
+    )
 
 	fmt.Printf("🔄 Redirecting Chrome extension to: %s\n", redirectURL)
 
@@ -1001,46 +1060,49 @@ func (h *AuthHandler) detectClientType(r *http.Request) ClientType {
 }
 
 // handleOAuthSuccess 处理OAuth成功响应
-func (h *AuthHandler) handleOAuthSuccess(w http.ResponseWriter, r *http.Request, clientType ClientType, user *models.User, accessToken, refreshToken string, expiresIn int64) {
+func (h *AuthHandler) handleOAuthSuccess(w http.ResponseWriter, r *http.Request, clientType ClientType, user *models.User, accessToken, refreshToken string, expiresIn int64, orgID string) {
 	// 对于POST请求（如/api/auth/oauth/google），无论客户端类型如何，都返回JSON
 	// 只有GET请求的OAuth回调才使用重定向
 	if r.Method == http.MethodPost {
-		response := models.UserLoginResponse{
-			User:         *user,
-			AccessToken:  accessToken,
-			RefreshToken: refreshToken,
-			ExpiresIn:    expiresIn,
-		}
-		utils.WriteSuccessResponse(w, response)
-		return
-	}
+        response := models.UserLoginResponse{
+            User:         *user,
+            AccessToken:  accessToken,
+            RefreshToken: refreshToken,
+            ExpiresIn:    expiresIn,
+            OrgID:        orgID,
+        }
+        utils.WriteSuccessResponse(w, response)
+        return
+    }
 
 	// GET请求的OAuth回调根据客户端类型处理
 	switch clientType {
 	case ClientTypeExtension:
 		h.handleChromeExtensionSuccess(w, r, user, accessToken, refreshToken, expiresIn)
-	case ClientTypeAPI:
-		// API客户端返回JSON
-		response := models.UserLoginResponse{
-			User:         *user,
-			AccessToken:  accessToken,
-			RefreshToken: refreshToken,
-			ExpiresIn:    expiresIn,
-		}
-		utils.WriteSuccessResponse(w, response)
-	case ClientTypeWeb:
-		// Web客户端重定向到前端页面
-		h.handleWebClientSuccess(w, r, user, accessToken, refreshToken, expiresIn)
-	default:
-		// 默认返回JSON
-		response := models.UserLoginResponse{
-			User:         *user,
-			AccessToken:  accessToken,
-			RefreshToken: refreshToken,
-			ExpiresIn:    expiresIn,
-		}
-		utils.WriteSuccessResponse(w, response)
-	}
+    case ClientTypeAPI:
+        // API客户端返回JSON
+        response := models.UserLoginResponse{
+            User:         *user,
+            AccessToken:  accessToken,
+            RefreshToken: refreshToken,
+            ExpiresIn:    expiresIn,
+            OrgID:        orgID,
+        }
+        utils.WriteSuccessResponse(w, response)
+    case ClientTypeWeb:
+        // Web客户端重定向到前端页面
+        h.handleWebClientSuccess(w, r, user, accessToken, refreshToken, expiresIn, orgID)
+    default:
+        // 默认返回JSON
+        response := models.UserLoginResponse{
+            User:         *user,
+            AccessToken:  accessToken,
+            RefreshToken: refreshToken,
+            ExpiresIn:    expiresIn,
+            OrgID:        orgID,
+        }
+        utils.WriteSuccessResponse(w, response)
+    }
 }
 
 // handleOAuthError 处理OAuth错误响应
@@ -1058,20 +1120,33 @@ func (h *AuthHandler) handleOAuthError(w http.ResponseWriter, r *http.Request, c
 }
 
 // handleWebClientSuccess 处理Web客户端的成功响应
-func (h *AuthHandler) handleWebClientSuccess(w http.ResponseWriter, r *http.Request, user *models.User, accessToken, refreshToken string, expiresIn int64) {
+func (h *AuthHandler) handleWebClientSuccess(w http.ResponseWriter, r *http.Request, user *models.User, accessToken, refreshToken string, expiresIn int64, orgID string) {
 	// 获取前端回调URL（可以从环境变量或配置中获取）
-	frontendURL := h.getFrontendCallbackURL()
+    frontendURL := h.getFrontendCallbackURL()
+
+    // Set HttpOnly cookie for same-origin web clients so subsequent
+    // requests can be authorized without manually injecting headers.
+    http.SetCookie(w, &http.Cookie{
+        Name:     "access_token",
+        Value:    accessToken,
+        Path:     "/",
+        MaxAge:   int(expiresIn),
+        HttpOnly: true,
+        Secure:   strings.HasPrefix(strings.ToLower(h.config.BaseURL), "https://"),
+        SameSite: http.SameSiteLaxMode,
+    })
 
 	// 构建重定向URL，将令牌作为URL参数传递
-	redirectURL := fmt.Sprintf("%s?success=true&access_token=%s&refresh_token=%s&expires_in=%d&user_id=%s&email=%s&name=%s",
-		frontendURL,
-		accessToken,
-		refreshToken,
-		expiresIn,
-		user.ID,
-		user.Email,
-		user.Name,
-	)
+    redirectURL := fmt.Sprintf("%s?success=true&access_token=%s&refresh_token=%s&expires_in=%d&user_id=%s&email=%s&name=%s&org_id=%s",
+        frontendURL,
+        accessToken,
+        refreshToken,
+        expiresIn,
+        user.ID,
+        user.Email,
+        user.Name,
+        orgID,
+    )
 
 	// 重定向到前端
 	http.Redirect(w, r, redirectURL, http.StatusFound)

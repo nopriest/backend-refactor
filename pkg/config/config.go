@@ -16,7 +16,6 @@ type Config struct {
 	Port        string
 
 	// 数据库配置
-	UseLocalDB  bool
 	PostgresDSN string
 	SupabaseURL string
 	SupabaseKey string
@@ -68,7 +67,6 @@ func LoadConfig() *Config {
 		// 默认值
 		Environment: getEnvWithDefault("ENVIRONMENT", "development"),
 		Port:        getEnvWithDefault("PORT", "3000"),
-		UseLocalDB:  getEnvBool("USE_LOCAL_DB", true),
 		JWTSecret:   getEnvWithDefault("JWT_SECRET", "your-secret-key-change-in-production"),
 		Debug:       getEnvBool("DEBUG", false),
 	}
@@ -106,10 +104,10 @@ func LoadConfig() *Config {
 	if config.Environment == "production" {
 		// 生产环境强制使用外部数据库（PostgreSQL或Supabase）
 		if config.PostgresDSN != "" || (config.SupabaseURL != "" && config.SupabaseKey != "") {
-			config.UseLocalDB = false
+			// local file database no longer supported; require external DB
 		} else {
 			// 生产环境没有配置外部数据库，这是一个警告
-			fmt.Println("⚠️  WARNING: Production environment using local file database. Please configure POSTGRES_DSN or SUPABASE_URL+SUPABASE_SERVICE_KEY")
+			fmt.Println("⚠️  WARNING: Production environment has no external database configured. Please configure POSTGRES_DSN or SUPABASE_URL+SUPABASE_SERVICE_KEY")
 		}
 		// 生产环境关闭调试
 		config.Debug = false
@@ -152,7 +150,7 @@ func (c *Config) Validate() error {
 	}
 
 	// 验证数据库配置
-	if c.UseLocalDB {
+	if false { // local DB removed
 		// 使用本地文件数据库，无需额外验证
 	} else if c.PostgresDSN != "" {
 		// 使用本地PostgreSQL，无需额外验证

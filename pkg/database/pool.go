@@ -34,7 +34,11 @@ func GetDatabase(config DatabaseConfig) DatabaseInterface {
 		}
 
 		// 创建新连接
-		instance := NewDatabase(config)
+        instance := NewDatabase(config)
+        // 调整应用侧连接池（若为 PostgreSQL 实现）
+        if psql, ok := instance.(*PostgresDatabase); ok {
+            psql.tunePoolParams()
+        }
 		globalPool = &DatabasePool{
 			instance: instance,
 			config:   config,
@@ -85,10 +89,9 @@ func shouldRecreateConnection(pool *DatabasePool, newConfig DatabaseConfig) bool
 
 // configEquals 比较两个数据库配置是否相等
 func configEquals(a, b DatabaseConfig) bool {
-	return a.UseLocalDB == b.UseLocalDB &&
-		a.PostgresDSN == b.PostgresDSN &&
-		a.SupabaseURL == b.SupabaseURL &&
-		a.SupabaseKey == b.SupabaseKey
+    return a.PostgresDSN == b.PostgresDSN &&
+        a.SupabaseURL == b.SupabaseURL &&
+        a.SupabaseKey == b.SupabaseKey
 }
 
 // CleanupIdleConnections 清理空闲连接（可以在后台定期调用）
@@ -133,10 +136,9 @@ func GetConnectionStats() map[string]interface{} {
 		"status":    "connected",
 		"last_used": lastUsed.Format(time.RFC3339),
 		"age":       time.Since(lastUsed).String(),
-		"config": map[string]interface{}{
-			"use_local_db": globalPool.config.UseLocalDB,
-			"has_postgres": globalPool.config.PostgresDSN != "",
-			"has_supabase": globalPool.config.SupabaseURL != "",
-		},
-	}
+        "config": map[string]interface{}{
+            "has_postgres": globalPool.config.PostgresDSN != "",
+            "has_supabase": globalPool.config.SupabaseURL != "",
+        },
+    }
 }

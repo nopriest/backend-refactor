@@ -216,3 +216,60 @@ CREATE TRIGGER update_space_permissions_updated_at BEFORE UPDATE ON space_permis
 
 DROP TRIGGER IF EXISTS update_org_invitations_updated_at ON organization_invitations;
 CREATE TRIGGER update_org_invitations_updated_at BEFORE UPDATE ON organization_invitations FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- =============================
+-- Collections schema
+-- =============================
+
+CREATE TABLE IF NOT EXISTS collections (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    space_id UUID NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    color VARCHAR(20),
+    icon VARCHAR(50),
+    position INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_collections_space ON collections(space_id);
+CREATE INDEX IF NOT EXISTS idx_collections_space_pos ON collections(space_id, position);
+
+DROP TRIGGER IF EXISTS update_collections_updated_at ON collections;
+CREATE TRIGGER update_collections_updated_at BEFORE UPDATE ON collections FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Soft delete columns (idempotent)
+ALTER TABLE IF EXISTS spaces ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE NULL;
+ALTER TABLE IF EXISTS collections ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE NULL;
+
+-- Helpful indexes for soft delete filtering
+CREATE INDEX IF NOT EXISTS idx_spaces_org_deleted ON spaces(organization_id, deleted_at);
+CREATE INDEX IF NOT EXISTS idx_collections_space_deleted ON collections(space_id, deleted_at);
+
+-- =============================
+-- Collection Items schema
+-- =============================
+
+CREATE TABLE IF NOT EXISTS collection_items (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    collection_id UUID NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    title VARCHAR(512) NOT NULL,
+    url TEXT,
+    fav_icon_url TEXT,
+    original_title VARCHAR(512),
+    ai_generated_title VARCHAR(512),
+    domain VARCHAR(255),
+    metadata JSONB DEFAULT '{}',
+    position INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    deleted_at TIMESTAMP WITH TIME ZONE NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_items_collection ON collection_items(collection_id);
+CREATE INDEX IF NOT EXISTS idx_items_collection_pos ON collection_items(collection_id, position);
+CREATE INDEX IF NOT EXISTS idx_items_collection_deleted ON collection_items(collection_id, deleted_at);
+
+DROP TRIGGER IF EXISTS update_collection_items_updated_at ON collection_items;
+CREATE TRIGGER update_collection_items_updated_at BEFORE UPDATE ON collection_items FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

@@ -221,7 +221,7 @@ func (db *SupabaseDatabase) CreateSpace(space *models.Space) error {
 }
 
 func (db *SupabaseDatabase) ListSpacesByOrganization(orgID string) ([]models.Space, error) {
-    data, err := db.makeRequest("GET", "/spaces?organization_id=eq."+orgID+"&select=*", nil)
+    data, err := db.makeRequest("GET", "/spaces?organization_id=eq."+orgID+"&deleted_at=is.null&select=*", nil)
     if err != nil { return nil, err }
     var rows []models.Space
     if err := json.Unmarshal(data, &rows); err != nil { return nil, err }
@@ -233,6 +233,23 @@ func (db *SupabaseDatabase) UpdateSpace(space *models.Space) error {
         "name":        space.Name,
         "description": space.Description,
         "is_default":  space.IsDefault,
+    })
+    return err
+}
+
+func (db *SupabaseDatabase) GetSpaceByID(spaceID string) (*models.Space, error) {
+    data, err := db.makeRequest("GET", "/spaces?id=eq."+spaceID+"&select=*", nil)
+    if err != nil { return nil, err }
+    var rows []models.Space
+    if err := json.Unmarshal(data, &rows); err != nil { return nil, err }
+    if len(rows) == 0 { return nil, fmt.Errorf("space not found") }
+    return &rows[0], nil
+}
+
+func (db *SupabaseDatabase) DeleteSpace(spaceID string) error {
+    // soft delete via setting deleted_at
+    _, err := db.makeRequest("PATCH", "/spaces?id=eq."+spaceID, map[string]interface{}{
+        "deleted_at": time.Now().Format(time.RFC3339),
     })
     return err
 }
@@ -300,6 +317,110 @@ func (db *SupabaseDatabase) UpdateInvitation(inv *models.OrganizationInvitation)
         "expires_at":  inv.ExpiresAt.Format(time.RFC3339),
     })
     return err
+}
+
+// ================= Collections =================
+
+func (db *SupabaseDatabase) CreateCollection(c *models.Collection) error {
+    payload := map[string]interface{}{
+        "space_id":   c.SpaceID,
+        "name":       c.Name,
+        "description": c.Description,
+        "color":      c.Color,
+        "icon":       c.Icon,
+        "position":   c.Position,
+    }
+    data, err := db.makeRequest("POST", "/collections", payload)
+    if err != nil { return err }
+    var rows []map[string]interface{}
+    if err := json.Unmarshal(data, &rows); err == nil && len(rows) > 0 {
+        if id, ok := rows[0]["id"].(string); ok { c.ID = id }
+    }
+    return nil
+}
+
+func (db *SupabaseDatabase) UpdateCollection(c *models.Collection) error {
+    _, err := db.makeRequest("PATCH", "/collections?id=eq."+c.ID, map[string]interface{}{
+        "name":        c.Name,
+        "description": c.Description,
+        "color":       c.Color,
+        "icon":        c.Icon,
+        "position":    c.Position,
+    })
+    return err
+}
+
+func (db *SupabaseDatabase) DeleteCollection(id string) error {
+    _, err := db.makeRequest("PATCH", "/collections?id=eq."+id, map[string]interface{}{
+        "deleted_at": time.Now().Format(time.RFC3339),
+    })
+    return err
+}
+
+func (db *SupabaseDatabase) ListCollectionsBySpace(spaceID string) ([]models.Collection, error) {
+    data, err := db.makeRequest("GET", "/collections?space_id=eq."+spaceID+"&select=*", nil)
+    if err != nil { return nil, err }
+    var rows []models.Collection
+    if err := json.Unmarshal(data, &rows); err != nil { return nil, err }
+    return rows, nil
+}
+
+func (db *SupabaseDatabase) GetCollection(id string) (*models.Collection, error) {
+    data, err := db.makeRequest("GET", "/collections?id=eq."+id+"&select=*", nil)
+    if err != nil { return nil, err }
+    var rows []models.Collection
+    if err := json.Unmarshal(data, &rows); err != nil || len(rows) == 0 { return nil, fmt.Errorf("collection not found") }
+    return &rows[0], nil
+}
+
+// ================ Collection Items =================
+
+func (db *SupabaseDatabase) CreateCollectionItem(it *models.CollectionItem) error {
+    payload := map[string]interface{}{
+        "collection_id":     it.CollectionID,
+        "title":             it.Title,
+        "url":               it.URL,
+        "fav_icon_url":      it.FavIconURL,
+        "original_title":    it.OriginalTitle,
+        "ai_generated_title": it.AIGeneratedTitle,
+        "domain":            it.Domain,
+        "metadata":          string(it.Metadata),
+        "position":          it.Position,
+    }
+    data, err := db.makeRequest("POST", "/collection_items", payload)
+    if err != nil { return err }
+    var rows []map[string]interface{}
+    if err := json.Unmarshal(data, &rows); err == nil && len(rows) > 0 {
+        if id, ok := rows[0]["id"].(string); ok { it.ID = id }
+    }
+    return nil
+}
+
+func (db *SupabaseDatabase) UpdateCollectionItem(it *models.CollectionItem) error {
+    _, err := db.makeRequest("PATCH", "/collection_items?id=eq."+it.ID, map[string]interface{}{
+        "title":             it.Title,
+        "url":               it.URL,
+        "fav_icon_url":      it.FavIconURL,
+        "original_title":    it.OriginalTitle,
+        "ai_generated_title": it.AIGeneratedTitle,
+        "domain":            it.Domain,
+        "metadata":          string(it.Metadata),
+        "position":          it.Position,
+    })
+    return err
+}
+
+func (db *SupabaseDatabase) DeleteCollectionItem(id string) error {
+    _, err := db.makeRequest("PATCH", "/collection_items?id=eq."+id, map[string]interface{}{"deleted_at": time.Now().Format(time.RFC3339)})
+    return err
+}
+
+func (db *SupabaseDatabase) ListItemsByCollection(collectionID string) ([]models.CollectionItem, error) {
+    data, err := db.makeRequest("GET", "/collection_items?collection_id=eq."+collectionID+"&select=*", nil)
+    if err != nil { return nil, err }
+    var rows []models.CollectionItem
+    if err := json.Unmarshal(data, &rows); err != nil { return nil, err }
+    return rows, nil
 }
 // CreateUser 创建用户
 func (db *SupabaseDatabase) CreateUser(user *models.User) error {

@@ -11,6 +11,7 @@ import (
     "tab-sync-backend-refactor/pkg/middleware"
     "tab-sync-backend-refactor/pkg/models"
     "tab-sync-backend-refactor/pkg/utils"
+    chiRoute "github.com/go-chi/chi/v5"
 )
 
 type OrgsHandler struct {
@@ -20,6 +21,45 @@ type OrgsHandler struct {
 
 func NewOrgsHandler(cfg *config.Config, db database.DatabaseInterface) *OrgsHandler {
     return &OrgsHandler{config: cfg, db: db}
+}
+
+// ==== helpers: membership/role checks ====
+func (h *OrgsHandler) getUserRoleInOrg(userID, orgID string) (models.OrgMemberRole, bool) {
+    // owner fast-path
+    if org, err := h.db.GetOrganization(orgID); err == nil {
+        if org.OwnerID == userID {
+            return models.RoleOwner, true
+        }
+    }
+    // check memberships
+    members, err := h.db.ListOrganizationMembers(orgID)
+    if err != nil {
+        return "", false
+    }
+    for _, m := range members {
+        if m.UserID == userID {
+            return m.Role, true
+        }
+    }
+    return "", false
+}
+
+func (h *OrgsHandler) requireOrgMember(w http.ResponseWriter, userID, orgID string) (models.OrgMemberRole, bool) {
+    role, ok := h.getUserRoleInOrg(userID, orgID)
+    if !ok {
+        utils.WriteForbiddenResponse(w, "Not a member of organization")
+        return "", false
+    }
+    return role, true
+}
+
+func (h *OrgsHandler) requireOwner(w http.ResponseWriter, userID, orgID string) bool {
+    role, ok := h.getUserRoleInOrg(userID, orgID)
+    if !ok || role != models.RoleOwner {
+        utils.WriteForbiddenResponse(w, "Owner privileges required")
+        return false
+    }
+    return true
 }
 
 // POST /api/orgs
@@ -48,7 +88,10 @@ func (h *OrgsHandler) CreateOrganization(w http.ResponseWriter, r *http.Request)
     for _, email := range req.InviteEmails {
         email = strings.TrimSpace(email)
         if email == "" { continue }
-        inv := &models.OrganizationInvitation{ OrganizationID: org.ID, Email: email, InviterID: user.ID, Status: models.InvitationPending, ExpiresAt: time.Now().Add(14*24*time.Hour) }
+        // 生成安全的 URL-safe token
+        tok, err := utils.GenerateURLToken(24)
+        if err != nil { fmt.Printf("[warn] failed to generate token for %s: %v\n", email, err); continue }
+        inv := &models.OrganizationInvitation{ OrganizationID: org.ID, Email: email, InviterID: user.ID, Token: tok, Status: models.InvitationPending, ExpiresAt: time.Now().Add(14*24*time.Hour) }
         if err := h.db.CreateInvitation(inv); err != nil { fmt.Printf("[warn] failed to create invitation for %s: %v\n", email, err) }
     }
 
@@ -60,15 +103,19 @@ func (h *OrgsHandler) ListMyOrganizations(w http.ResponseWriter, r *http.Request
     user, err := middleware.RequireUser(r.Context())
     if err != nil { utils.WriteUnauthorizedResponse(w, "Authentication required"); return }
     orgs, err := h.db.ListUserOrganizations(user.ID)
-    if err != nil { utils.WriteInternalServerErrorResponse(w, err.Error()); return }
+    if err != nil {
+        fmt.Printf("[error] ListMyOrganizations failed for user=%s: %v\n", user.ID, err)
+        utils.WriteInternalServerErrorResponse(w, err.Error()); return }
     utils.WriteSuccessResponse(w, map[string]interface{}{ "organizations": orgs })
 }
 
 // GET /api/orgs/{orgID}/members
 func (h *OrgsHandler) ListMembers(w http.ResponseWriter, r *http.Request) {
-    // Simple listing; authorization checks omitted for brevity
     orgID := r.URL.Query().Get("org_id")
     if orgID == "" { utils.WriteBadRequestResponse(w, "org_id required"); return }
+    user, err := middleware.RequireUser(r.Context())
+    if err != nil { utils.WriteUnauthorizedResponse(w, "Authentication required"); return }
+    if _, ok := h.requireOrgMember(w, user.ID, orgID); !ok { return }
     members, err := h.db.ListOrganizationMembers(orgID)
     if err != nil { utils.WriteInternalServerErrorResponse(w, err.Error()); return }
     utils.WriteSuccessResponse(w, map[string]interface{}{ "members": members })
@@ -81,11 +128,13 @@ func (h *OrgsHandler) CreateSpace(w http.ResponseWriter, r *http.Request) {
     var req struct{ OrganizationID, Name, Description string; IsDefault bool }
     if err := utils.ParseJSONBody(r, &req); err != nil { utils.WriteBadRequestResponse(w, "Invalid body"); return }
     if req.OrganizationID == "" || strings.TrimSpace(req.Name) == "" { utils.WriteBadRequestResponse(w, "org_id and name required"); return }
-    // Minimal authorization: user must belong to org
-    orgs, _ := h.db.ListUserOrganizations(user.ID)
-    allowed := false
-    for _, o := range orgs { if o.ID == req.OrganizationID { allowed = true; break } }
-    if !allowed { utils.WriteUnauthorizedResponse(w, "Not a member of organization"); return }
+    // Authorization: only owner (或未来扩展 admin) 可创建空间
+    role, ok := h.requireOrgMember(w, user.ID, req.OrganizationID)
+    if !ok { return }
+    if role != models.RoleOwner && role != models.RoleAdmin {
+        utils.WriteForbiddenResponse(w, "Only owner/admin can create spaces")
+        return
+    }
     space := &models.Space{ OrganizationID: req.OrganizationID, Name: req.Name, Description: req.Description, IsDefault: req.IsDefault }
     if err := h.db.CreateSpace(space); err != nil { utils.WriteInternalServerErrorResponse(w, err.Error()); return }
     utils.WriteSuccessResponse(w, map[string]interface{}{ "space": space })
@@ -95,6 +144,10 @@ func (h *OrgsHandler) CreateSpace(w http.ResponseWriter, r *http.Request) {
 func (h *OrgsHandler) ListSpaces(w http.ResponseWriter, r *http.Request) {
     orgID := r.URL.Query().Get("org_id")
     if orgID == "" { utils.WriteBadRequestResponse(w, "org_id required"); return }
+    // require membership to browse
+    user, err := middleware.RequireUser(r.Context())
+    if err != nil { utils.WriteUnauthorizedResponse(w, "Authentication required"); return }
+    if _, ok := h.requireOrgMember(w, user.ID, orgID); !ok { return }
     spaces, err := h.db.ListSpacesByOrganization(orgID)
     if err != nil { utils.WriteInternalServerErrorResponse(w, err.Error()); return }
     utils.WriteSuccessResponse(w, map[string]interface{}{ "spaces": spaces })
@@ -105,9 +158,58 @@ func (h *OrgsHandler) SetSpacePermission(w http.ResponseWriter, r *http.Request)
     var req struct{ SpaceID, UserID string; CanEdit bool }
     if err := utils.ParseJSONBody(r, &req); err != nil { utils.WriteBadRequestResponse(w, "Invalid body"); return }
     if req.SpaceID == "" || req.UserID == "" { utils.WriteBadRequestResponse(w, "space_id and user_id required"); return }
+    // Only the organization owner of the space's organization can set permissions
+    user, err := middleware.RequireUser(r.Context())
+    if err != nil { utils.WriteUnauthorizedResponse(w, "Authentication required"); return }
+    space, err := h.db.GetSpaceByID(req.SpaceID)
+    if err != nil { utils.WriteNotFoundResponse(w, "space not found"); return }
+    if !h.requireOwner(w, user.ID, space.OrganizationID) { return }
     if err := h.db.SetSpacePermission(req.SpaceID, req.UserID, req.CanEdit); err != nil { utils.WriteInternalServerErrorResponse(w, err.Error()); return }
     perms, _ := h.db.GetSpacePermissions(req.SpaceID)
     utils.WriteSuccessResponse(w, map[string]interface{}{ "permissions": perms })
+}
+
+// PUT /api/orgs/spaces/{id}
+func (h *OrgsHandler) UpdateSpace(w http.ResponseWriter, r *http.Request) {
+    user, err := middleware.RequireUser(r.Context())
+    if err != nil { utils.WriteUnauthorizedResponse(w, "Authentication required"); return }
+    spaceID := chiRoute.URLParam(r, "id")
+    if strings.TrimSpace(spaceID) == "" { utils.WriteBadRequestResponse(w, "space id required"); return }
+    space, err := h.db.GetSpaceByID(spaceID)
+    if err != nil { utils.WriteNotFoundResponse(w, "space not found"); return }
+    // owner/admin only
+    role, ok := h.requireOrgMember(w, user.ID, space.OrganizationID)
+    if !ok { return }
+    if role != models.RoleOwner && role != models.RoleAdmin {
+        utils.WriteForbiddenResponse(w, "Only owner/admin can update spaces")
+        return
+    }
+    var req struct{ Name, Description string; IsDefault bool }
+    if err := utils.ParseJSONBody(r, &req); err != nil { utils.WriteBadRequestResponse(w, "Invalid body"); return }
+    space.Name = req.Name
+    space.Description = req.Description
+    space.IsDefault = req.IsDefault
+    if err := h.db.UpdateSpace(space); err != nil { utils.WriteInternalServerErrorResponse(w, err.Error()); return }
+    utils.WriteSuccessResponse(w, map[string]interface{}{"space": space})
+}
+
+// DELETE /api/orgs/spaces/{id}
+func (h *OrgsHandler) DeleteSpace(w http.ResponseWriter, r *http.Request) {
+    user, err := middleware.RequireUser(r.Context())
+    if err != nil { utils.WriteUnauthorizedResponse(w, "Authentication required"); return }
+    spaceID := chiRoute.URLParam(r, "id")
+    if strings.TrimSpace(spaceID) == "" { utils.WriteBadRequestResponse(w, "space id required"); return }
+    space, err := h.db.GetSpaceByID(spaceID)
+    if err != nil { utils.WriteNotFoundResponse(w, "space not found"); return }
+    // owner/admin only
+    role, ok := h.requireOrgMember(w, user.ID, space.OrganizationID)
+    if !ok { return }
+    if role != models.RoleOwner && role != models.RoleAdmin {
+        utils.WriteForbiddenResponse(w, "Only owner/admin can delete spaces")
+        return
+    }
+    if err := h.db.DeleteSpace(spaceID); err != nil { utils.WriteInternalServerErrorResponse(w, err.Error()); return }
+    utils.WriteSuccessResponse(w, map[string]interface{}{"deleted": true, "id": spaceID})
 }
 
 // POST /api/orgs/{orgID}/invite
@@ -117,7 +219,11 @@ func (h *OrgsHandler) InviteMember(w http.ResponseWriter, r *http.Request) {
     var req struct{ OrganizationID string; Email string }
     if err := utils.ParseJSONBody(r, &req); err != nil { utils.WriteBadRequestResponse(w, "Invalid body"); return }
     if req.OrganizationID == "" || req.Email == "" { utils.WriteBadRequestResponse(w, "org_id and email required"); return }
-    inv := &models.OrganizationInvitation{ OrganizationID: req.OrganizationID, Email: req.Email, InviterID: user.ID, Status: models.InvitationPending, ExpiresAt: time.Now().Add(14*24*time.Hour) }
+    // Only owner can invite
+    if !h.requireOwner(w, user.ID, req.OrganizationID) { return }
+    tok, err := utils.GenerateURLToken(24)
+    if err != nil { utils.WriteInternalServerErrorResponse(w, "failed to generate token"); return }
+    inv := &models.OrganizationInvitation{ OrganizationID: req.OrganizationID, Email: req.Email, InviterID: user.ID, Token: tok, Status: models.InvitationPending, ExpiresAt: time.Now().Add(14*24*time.Hour) }
     if err := h.db.CreateInvitation(inv); err != nil { utils.WriteInternalServerErrorResponse(w, err.Error()); return }
     utils.WriteSuccessResponse(w, map[string]interface{}{ "invitation": inv })
 }
@@ -153,4 +259,3 @@ func (h *OrgsHandler) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
 
     utils.WriteSuccessResponse(w, map[string]interface{}{ "organization_id": inv.OrganizationID })
 }
-

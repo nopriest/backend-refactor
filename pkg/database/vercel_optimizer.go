@@ -70,13 +70,12 @@ func (vo *VercelOptimizer) GetOptimizedConnection(config DatabaseConfig) Databas
 
 // generateConfigKey 生成配置的唯一键
 func (vo *VercelOptimizer) generateConfigKey(config DatabaseConfig) string {
-	return fmt.Sprintf("%t_%s_%s_%s_%t",
-		config.UseLocalDB,
-		hashString(config.PostgresDSN),
-		hashString(config.SupabaseURL),
-		hashString(config.SupabaseKey),
-		config.Debug,
-	)
+    return fmt.Sprintf("%s_%s_%s_%t",
+        hashString(config.PostgresDSN),
+        hashString(config.SupabaseURL),
+        hashString(config.SupabaseKey),
+        config.Debug,
+    )
 }
 
 // hashString 简单的字符串哈希（用于生成短键）

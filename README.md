@@ -28,7 +28,6 @@ backend-refactor/
 │   │   └── config.go     # 环境变量加载和验证
 │   ├── database/         # 数据库抽象层
 │   │   ├── interface.go  # 数据库接口定义
-│   │   ├── local.go      # 本地文件数据库实现
 │   │   ├── postgres.go   # PostgreSQL数据库实现
 │   │   └── supabase.go   # Supabase数据库实现
 │   ├── handlers/         # API处理器
@@ -72,16 +71,9 @@ go mod tidy
 
 ### 2. 数据库配置
 
-#### 选项1：使用本地文件数据库（推荐用于快速开发）
-```bash
-# 复制环境变量文件
-cp .env.example .env.local
+仅支持外部数据库：请配置 PostgreSQL 或 Supabase。
 
-# 编辑 .env.local，确保：
-USE_LOCAL_DB=true
-```
-
-#### 选项2：使用本地PostgreSQL
+#### 使用本地PostgreSQL
 ```bash
 # 启动PostgreSQL（Docker方式）
 docker run --name tabsync-postgres \
@@ -90,7 +82,6 @@ docker run --name tabsync-postgres \
   -p 5432:5432 -d postgres:15
 
 # 编辑 .env.local：
-# USE_LOCAL_DB=false
 POSTGRES_DSN=postgres://postgres:123456@localhost:5432/postgres?sslmode=disable
 
 # 初始化数据库（可选）
@@ -133,11 +124,9 @@ JWT_SECRET=your-production-jwt-secret
 
 # 数据库配置（选择一种）
 # PostgreSQL
-USE_LOCAL_DB=false
 POSTGRES_DSN=postgres://user:pass@host:port/db?sslmode=require
 
 # 或者 Supabase
-USE_LOCAL_DB=false
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_KEY=your-service-key
 
@@ -191,12 +180,19 @@ git push origin main
 
 ### 数据库自动选择逻辑
 
-系统按以下优先级自动选择数据库：
+系统按以下优先级自动选择数据库（已取消本地文件数据库支持）：
 
-1. **本地文件数据库**: `USE_LOCAL_DB=true`
-2. **PostgreSQL**: `POSTGRES_DSN` 已配置
-3. **Supabase**: `SUPABASE_URL` 和 `SUPABASE_SERVICE_KEY` 已配置
-4. **默认**: 回退到本地文件数据库
+- 在 Vercel 环境：优先 Supabase；其次 PostgreSQL；否则报错
+- 在本地/非 Vercel 环境：优先 PostgreSQL；其次 Supabase；否则报错
+
+迁移到外部数据库（从 local 模式）
+
+- 从 `.env.local`/`.env.production` 中删除所有 `USE_LOCAL_DB=` 行
+- 选择一种外部数据源并配置：
+  - PostgreSQL：设置 `POSTGRES_DSN=postgres://user:pass@host:5432/db?sslmode=disable`（或 `require`）
+  - Supabase：设置 `SUPABASE_URL` 与 `SUPABASE_SERVICE_KEY`（也可使用 Supabase 提供的 PostgreSQL DSN）
+- 初始化数据库：`go run scripts/setup_db.go`（或执行项目 SQL 脚本）
+- 数据迁移：旧版 local 数据（若存在）通常位于 `./data/` JSON；当前版本不提供自动迁移脚本，可按 `pkg/models` 结构进行一次性导入（优先 users/snapshots/collections/items 等表）
 
 ### 环境特定行为
 

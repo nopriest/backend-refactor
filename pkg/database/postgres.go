@@ -422,6 +422,17 @@ func (db *PostgresDatabase) Close() error {
     return db.db.Close()
 }
 
+// tunePoolParams 调整应用侧连接池参数（主要池化由 Neon/pgBouncer 负责）
+func (db *PostgresDatabase) tunePoolParams() {
+    if db == nil || db.db == nil {
+        return
+    }
+    db.db.SetMaxOpenConns(20)
+    db.db.SetMaxIdleConns(10)
+    db.db.SetConnMaxLifetime(5 * time.Minute)
+    db.db.SetConnMaxIdleTime(2 * time.Minute)
+}
+
 // ================= Organizations & Spaces & Invitations =================
 
 // Organizations
@@ -532,7 +543,7 @@ func (db *PostgresDatabase) CreateSpace(space *models.Space) error {
 }
 
 func (db *PostgresDatabase) ListSpacesByOrganization(orgID string) ([]models.Space, error) {
-    rows, err := db.db.Query(`SELECT id, organization_id, name, description, is_default, created_at, updated_at FROM spaces WHERE organization_id = $1 ORDER BY created_at ASC`, orgID)
+    rows, err := db.db.Query(`SELECT id, organization_id, name, description, is_default, created_at, updated_at FROM spaces WHERE organization_id = $1 AND deleted_at IS NULL ORDER BY created_at ASC`, orgID)
     if err != nil {
         return nil, fmt.Errorf("failed to list spaces: %w", err)
     }
@@ -551,6 +562,25 @@ func (db *PostgresDatabase) ListSpacesByOrganization(orgID string) ([]models.Spa
 func (db *PostgresDatabase) UpdateSpace(space *models.Space) error {
     _, err := db.db.Exec(`UPDATE spaces SET name=$1, description=$2, is_default=$3, updated_at=NOW() WHERE id=$4`, space.Name, space.Description, space.IsDefault, space.ID)
     return err
+}
+
+func (db *PostgresDatabase) GetSpaceByID(spaceID string) (*models.Space, error) {
+    var s models.Space
+    err := db.db.QueryRow(`SELECT id, organization_id, name, description, is_default, created_at, updated_at FROM spaces WHERE id = $1`, spaceID).
+        Scan(&s.ID, &s.OrganizationID, &s.Name, &s.Description, &s.IsDefault, &s.CreatedAt, &s.UpdatedAt)
+    if err != nil {
+        if err == sql.ErrNoRows { return nil, fmt.Errorf("space not found") }
+        return nil, fmt.Errorf("failed to get space: %w", err)
+    }
+    return &s, nil
+}
+
+func (db *PostgresDatabase) DeleteSpace(spaceID string) error {
+    _, err := db.db.Exec(`DELETE FROM spaces WHERE id=$1`, spaceID)
+    if err != nil {
+        return fmt.Errorf("failed to delete space: %w", err)
+    }
+    return nil
 }
 
 func (db *PostgresDatabase) SetSpacePermission(spaceID, userID string, canEdit bool) error {
@@ -588,6 +618,92 @@ func (db *PostgresDatabase) CreateInvitation(inv *models.OrganizationInvitation)
     `
     return db.db.QueryRow(query, inv.OrganizationID, inv.Email, inv.InviterID, inv.Token, string(inv.Status), inv.ExpiresAt).
         Scan(&inv.ID, &inv.CreatedAt, &inv.UpdatedAt)
+}
+
+// ================= Collections =================
+
+func (db *PostgresDatabase) CreateCollection(c *models.Collection) error {
+    query := `
+        INSERT INTO collections (space_id, name, description, color, icon, position, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, COALESCE($6,0), NOW(), NOW())
+        RETURNING id, created_at, updated_at
+    `
+    return db.db.QueryRow(query, c.SpaceID, c.Name, c.Description, c.Color, c.Icon, c.Position).Scan(&c.ID, &c.CreatedAt, &c.UpdatedAt)
+}
+
+func (db *PostgresDatabase) UpdateCollection(c *models.Collection) error {
+    _, err := db.db.Exec(`UPDATE collections SET name=$1, description=$2, color=$3, icon=$4, position=$5, updated_at=NOW() WHERE id=$6`,
+        c.Name, c.Description, c.Color, c.Icon, c.Position, c.ID)
+    return err
+}
+
+func (db *PostgresDatabase) DeleteCollection(id string) error {
+    _, err := db.db.Exec(`UPDATE collections SET deleted_at=NOW(), updated_at=NOW() WHERE id=$1`, id)
+    return err
+}
+
+func (db *PostgresDatabase) ListCollectionsBySpace(spaceID string) ([]models.Collection, error) {
+    rows, err := db.db.Query(`SELECT id, space_id, name, description, color, icon, position, created_at, updated_at, deleted_at FROM collections WHERE space_id=$1 ORDER BY position ASC, created_at ASC`, spaceID)
+    if err != nil { return nil, fmt.Errorf("failed to list collections: %w", err) }
+    defer rows.Close()
+    var list []models.Collection
+    for rows.Next() {
+        var c models.Collection
+        if err := rows.Scan(&c.ID, &c.SpaceID, &c.Name, &c.Description, &c.Color, &c.Icon, &c.Position, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt); err != nil {
+            return nil, err
+        }
+        list = append(list, c)
+    }
+    return list, nil
+}
+
+func (db *PostgresDatabase) GetCollection(id string) (*models.Collection, error) {
+    var c models.Collection
+    err := db.db.QueryRow(`SELECT id, space_id, name, description, color, icon, position, created_at, updated_at, deleted_at FROM collections WHERE id=$1`, id).
+        Scan(&c.ID, &c.SpaceID, &c.Name, &c.Description, &c.Color, &c.Icon, &c.Position, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt)
+    if err != nil {
+        if err == sql.ErrNoRows { return nil, fmt.Errorf("collection not found") }
+        return nil, fmt.Errorf("failed to get collection: %w", err)
+    }
+    return &c, nil
+}
+
+// ================ Collection Items =================
+
+func (db *PostgresDatabase) CreateCollectionItem(it *models.CollectionItem) error {
+    query := `
+        INSERT INTO collection_items (collection_id, title, url, fav_icon_url, original_title, ai_generated_title, domain, metadata, position, created_at, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,COALESCE($9,0), NOW(), NOW())
+        RETURNING id, created_at, updated_at
+    `
+    return db.db.QueryRow(query, it.CollectionID, it.Title, it.URL, it.FavIconURL, it.OriginalTitle, it.AIGeneratedTitle, it.Domain, it.Metadata, it.Position).
+        Scan(&it.ID, &it.CreatedAt, &it.UpdatedAt)
+}
+
+func (db *PostgresDatabase) UpdateCollectionItem(it *models.CollectionItem) error {
+    _, err := db.db.Exec(`UPDATE collection_items SET title=$1, url=$2, fav_icon_url=$3, original_title=$4, ai_generated_title=$5, domain=$6, metadata=$7, position=$8, updated_at=NOW() WHERE id=$9`,
+        it.Title, it.URL, it.FavIconURL, it.OriginalTitle, it.AIGeneratedTitle, it.Domain, it.Metadata, it.Position, it.ID)
+    return err
+}
+
+func (db *PostgresDatabase) DeleteCollectionItem(id string) error {
+    _, err := db.db.Exec(`UPDATE collection_items SET deleted_at=NOW(), updated_at=NOW() WHERE id=$1`, id)
+    return err
+}
+
+func (db *PostgresDatabase) ListItemsByCollection(collectionID string) ([]models.CollectionItem, error) {
+    rows, err := db.db.Query(`SELECT id, collection_id, title, url, fav_icon_url, original_title, ai_generated_title, domain, metadata, position, created_at, updated_at, deleted_at FROM collection_items WHERE collection_id=$1 ORDER BY position ASC, created_at ASC`, collectionID)
+    if err != nil { return nil, fmt.Errorf("failed to list items: %w", err) }
+    defer rows.Close()
+    var list []models.CollectionItem
+    for rows.Next() {
+        var it models.CollectionItem
+        if err := rows.Scan(&it.ID, &it.CollectionID, &it.Title, &it.URL, &it.FavIconURL, &it.OriginalTitle, &it.AIGeneratedTitle, &it.Domain, &it.Metadata, &it.Position, &it.CreatedAt, &it.UpdatedAt, &it.DeletedAt); err != nil {
+            return nil, err
+        }
+        list = append(list, it)
+    }
+    return list, nil
 }
 
 func (db *PostgresDatabase) GetInvitationByToken(token string) (*models.OrganizationInvitation, error) {

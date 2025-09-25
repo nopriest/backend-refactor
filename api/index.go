@@ -28,13 +28,12 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 获取优化的数据库连接（自动适配Vercel环境）
-	db := database.GetOptimizedDatabase(database.DatabaseConfig{
-		UseLocalDB:  cfg.UseLocalDB,
-		PostgresDSN: cfg.PostgresDSN,
-		SupabaseURL: cfg.SupabaseURL,
-		SupabaseKey: cfg.SupabaseKey,
-		Debug:       cfg.Debug,
-	})
+    db := database.GetOptimizedDatabase(database.DatabaseConfig{
+        PostgresDSN: cfg.PostgresDSN,
+        SupabaseURL: cfg.SupabaseURL,
+        SupabaseKey: cfg.SupabaseKey,
+        Debug:       cfg.Debug,
+    })
 	// 注意：连接由优化器管理，无需手动关闭
 
 	// 创建Chi路由器
@@ -81,6 +80,7 @@ func setupRoutes(router *chi.Mux, cfg *config.Config, db database.DatabaseInterf
 	authHandler := handlers.NewAuthHandler(cfg, db)
 	snapshotHandler := handlers.NewSnapshotHandler(cfg, db)
 	webhookHandler := handlers.NewWebhookHandler(cfg, db)
+	collectionsHandler := handlers.NewCollectionsHandler(cfg, db)
 
 	// 健康检查端点
 	router.Get("/", authHandler.HealthCheck)
@@ -183,6 +183,8 @@ func setupRoutes(router *chi.Mux, cfg *config.Config, db database.DatabaseInterf
 				r.Get("/members", orgsHandler.ListMembers) // expects ?org_id=
 				r.Get("/spaces", orgsHandler.ListSpaces)   // expects ?org_id=
 				r.Post("/spaces", orgsHandler.CreateSpace)
+				r.Put("/spaces/{id}", orgsHandler.UpdateSpace)
+				r.Delete("/spaces/{id}", orgsHandler.DeleteSpace)
 				r.Post("/invite", orgsHandler.InviteMember)
 				r.Put("/spaces/permissions", orgsHandler.SetSpacePermission)
 			})
@@ -192,6 +194,20 @@ func setupRoutes(router *chi.Mux, cfg *config.Config, db database.DatabaseInterf
 				r.Get("/my", orgsHandler.ListMyInvitations)
 				r.Post("/accept", orgsHandler.AcceptInvitation)
 			})
+
+			// Collections
+			r.Route("/collections", func(r chi.Router) {
+				r.Get("/", collectionsHandler.ListCollections)           // ?space_id=
+				r.Post("/", collectionsHandler.CreateCollection)
+				r.Put("/{id}", collectionsHandler.UpdateCollection)
+				r.Delete("/{id}", collectionsHandler.DeleteCollection)   // requires ?space_id=
+			})
+
+			// Collection Items
+			r.Get("/collections/{id}/items", collectionsHandler.ListItems)
+			r.Post("/collections/{id}/items", collectionsHandler.CreateItem)
+			r.Put("/collection-items/{item_id}", collectionsHandler.UpdateItem)
+			r.Delete("/collection-items/{item_id}", collectionsHandler.DeleteItem)
 
 			r.Route("/snapshots", func(r chi.Router) {
 				r.Get("/", snapshotHandler.ListSnapshots)           // 列出快照

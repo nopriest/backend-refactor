@@ -33,10 +33,11 @@ type UserLoginRequest struct {
 
 // UserLoginResponse represents the response payload for user login
 type UserLoginResponse struct {
-	User         User   `json:"user"`
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	ExpiresIn    int64  `json:"expires_in"`
+    User         User   `json:"user"`
+    AccessToken  string `json:"access_token"`
+    RefreshToken string `json:"refresh_token"`
+    ExpiresIn    int64  `json:"expires_in"`
+    OrgID        string `json:"org_id,omitempty"`
 }
 
 // RefreshTokenRequest represents the request payload for token refresh
