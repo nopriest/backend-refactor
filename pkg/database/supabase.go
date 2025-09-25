@@ -133,6 +133,7 @@ func (db *SupabaseDatabase) CreateOrganization(org *models.Organization) error {
         "owner_id":    org.OwnerID,
         "description": org.Description,
         "avatar":      org.Avatar,
+        "color":       org.Color,
     }
     data, err := db.makeRequest("POST", "/organizations", payload)
     if err != nil { return err }
@@ -183,6 +184,17 @@ func (db *SupabaseDatabase) GetOrganization(orgID string) (*models.Organization,
     var rows []models.Organization
     if err := json.Unmarshal(data, &rows); err != nil || len(rows) == 0 { return nil, fmt.Errorf("organization not found") }
     return &rows[0], nil
+}
+
+func (db *SupabaseDatabase) UpdateOrganization(org *models.Organization) error {
+    payload := map[string]interface{}{}
+    if strings.TrimSpace(org.Name) != "" { payload["name"] = org.Name }
+    if strings.TrimSpace(org.Description) != "" { payload["description"] = org.Description }
+    if strings.TrimSpace(org.Avatar) != "" { payload["avatar"] = org.Avatar }
+    if strings.TrimSpace(org.Color) != "" { payload["color"] = org.Color }
+    if len(payload) == 0 { return nil }
+    _, err := db.makeRequest("PATCH", "/organizations?id=eq."+org.ID, payload)
+    return err
 }
 
 func (db *SupabaseDatabase) AddOrganizationMember(m *models.OrganizationMembership) error {

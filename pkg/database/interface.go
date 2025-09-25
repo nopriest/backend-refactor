@@ -20,6 +20,7 @@ type DatabaseInterface interface {
 
     // Organizations & Memberships
     CreateOrganization(org *models.Organization) error
+    UpdateOrganization(org *models.Organization) error
     ListUserOrganizations(userID string) ([]models.Organization, error)
     GetOrganization(orgID string) (*models.Organization, error)
     AddOrganizationMember(m *models.OrganizationMembership) error
@@ -153,4 +154,3 @@ func isVercelEnvironment() bool {
 func NewDatabaseFromConfig(cfg interface{}) DatabaseInterface {
     panic("NewDatabaseFromConfig is deprecated. Please construct DatabaseConfig with Postgres or Supabase settings.")
 }
-

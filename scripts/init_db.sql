@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS organizations (
     owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     description TEXT,
     avatar TEXT,
+    color VARCHAR(20),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -240,6 +241,7 @@ DROP TRIGGER IF EXISTS update_collections_updated_at ON collections;
 CREATE TRIGGER update_collections_updated_at BEFORE UPDATE ON collections FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- Soft delete columns (idempotent)
+ALTER TABLE IF EXISTS organizations ADD COLUMN IF NOT EXISTS color VARCHAR(20);
 ALTER TABLE IF EXISTS spaces ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE NULL;
 ALTER TABLE IF EXISTS collections ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE NULL;
 

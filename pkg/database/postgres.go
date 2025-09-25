@@ -438,11 +438,11 @@ func (db *PostgresDatabase) tunePoolParams() {
 // Organizations
 func (db *PostgresDatabase) CreateOrganization(org *models.Organization) error {
     query := `
-        INSERT INTO organizations (name, owner_id, description, avatar, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, NOW(), NOW())
+        INSERT INTO organizations (name, owner_id, description, avatar, color, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
         RETURNING id, created_at, updated_at
     `
-    err := db.db.QueryRow(query, org.Name, org.OwnerID, org.Description, org.Avatar).
+    err := db.db.QueryRow(query, org.Name, org.OwnerID, org.Description, org.Avatar, org.Color).
         Scan(&org.ID, &org.CreatedAt, &org.UpdatedAt)
     if err != nil {
         return fmt.Errorf("failed to create organization: %w", err)
@@ -461,7 +461,7 @@ func (db *PostgresDatabase) CreateOrganization(org *models.Organization) error {
 
 func (db *PostgresDatabase) ListUserOrganizations(userID string) ([]models.Organization, error) {
     query := `
-        SELECT DISTINCT o.id, o.name, o.owner_id, o.description, o.avatar, o.created_at, o.updated_at
+        SELECT DISTINCT o.id, o.name, o.owner_id, o.description, o.avatar, COALESCE(o.color,''), o.created_at, o.updated_at
         FROM organizations o
         LEFT JOIN organization_memberships m ON m.organization_id = o.id
         WHERE o.owner_id = $1 OR m.user_id = $1
@@ -475,7 +475,7 @@ func (db *PostgresDatabase) ListUserOrganizations(userID string) ([]models.Organ
     var result []models.Organization
     for rows.Next() {
         var o models.Organization
-        if err := rows.Scan(&o.ID, &o.Name, &o.OwnerID, &o.Description, &o.Avatar, &o.CreatedAt, &o.UpdatedAt); err != nil {
+        if err := rows.Scan(&o.ID, &o.Name, &o.OwnerID, &o.Description, &o.Avatar, &o.Color, &o.CreatedAt, &o.UpdatedAt); err != nil {
             return nil, err
         }
         result = append(result, o)
@@ -484,9 +484,9 @@ func (db *PostgresDatabase) ListUserOrganizations(userID string) ([]models.Organ
 }
 
 func (db *PostgresDatabase) GetOrganization(orgID string) (*models.Organization, error) {
-    query := `SELECT id, name, owner_id, description, avatar, created_at, updated_at FROM organizations WHERE id = $1`
+    query := `SELECT id, name, owner_id, description, avatar, COALESCE(color,''), created_at, updated_at FROM organizations WHERE id = $1`
     var o models.Organization
-    err := db.db.QueryRow(query, orgID).Scan(&o.ID, &o.Name, &o.OwnerID, &o.Description, &o.Avatar, &o.CreatedAt, &o.UpdatedAt)
+    err := db.db.QueryRow(query, orgID).Scan(&o.ID, &o.Name, &o.OwnerID, &o.Description, &o.Avatar, &o.Color, &o.CreatedAt, &o.UpdatedAt)
     if err != nil {
         if err == sql.ErrNoRows {
             return nil, fmt.Errorf("organization not found")
@@ -494,6 +494,24 @@ func (db *PostgresDatabase) GetOrganization(orgID string) (*models.Organization,
         return nil, fmt.Errorf("failed to get organization: %w", err)
     }
     return &o, nil
+}
+
+func (db *PostgresDatabase) UpdateOrganization(org *models.Organization) error {
+    _, err := db.db.Exec(`
+        UPDATE organizations
+        SET name = COALESCE($1, name),
+            description = COALESCE($2, description),
+            avatar = COALESCE($3, avatar),
+            color = COALESCE($4, color),
+            updated_at = NOW()
+        WHERE id = $5
+    `, nullIfEmpty(org.Name), nullIfEmpty(org.Description), nullIfEmpty(org.Avatar), nullIfEmpty(org.Color), org.ID)
+    return err
+}
+
+func nullIfEmpty(s string) interface{} {
+    if strings.TrimSpace(s) == "" { return nil }
+    return s
 }
 
 func (db *PostgresDatabase) AddOrganizationMember(m *models.OrganizationMembership) error {

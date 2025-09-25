@@ -70,13 +70,17 @@ func (h *OrgsHandler) CreateOrganization(w http.ResponseWriter, r *http.Request)
         Name string `json:"name"`
         Description string `json:"description"`
         Avatar string `json:"avatar"`
+        Color string `json:"color"`
         DefaultSpaces []struct{ Name, Description string; IsDefault bool } `json:"default_spaces"`
         InviteEmails []string `json:"invite_emails"`
     }
     if err := utils.ParseJSONBody(r, &req); err != nil { utils.WriteBadRequestResponse(w, "Invalid body"); return }
     if strings.TrimSpace(req.Name) == "" { utils.WriteBadRequestResponse(w, "Name required"); return }
 
-    org := &models.Organization{ Name: req.Name, Description: req.Description, Avatar: req.Avatar, OwnerID: user.ID }
+    // Default color if not provided
+    color := strings.TrimSpace(req.Color)
+    if color == "" { color = "#3b82f6" }
+    org := &models.Organization{ Name: req.Name, Description: req.Description, Avatar: req.Avatar, Color: color, OwnerID: user.ID }
     if err := h.db.CreateOrganization(org); err != nil { utils.WriteInternalServerErrorResponse(w, "Create org failed: "+err.Error()); return }
 
     // Create optional default spaces
@@ -96,6 +100,39 @@ func (h *OrgsHandler) CreateOrganization(w http.ResponseWriter, r *http.Request)
     }
 
     utils.WriteSuccessResponse(w, map[string]interface{}{ "organization": org })
+}
+
+// PUT /api/orgs/{id}
+func (h *OrgsHandler) UpdateOrganization(w http.ResponseWriter, r *http.Request) {
+    user, err := middleware.RequireUser(r.Context())
+    if err != nil { utils.WriteUnauthorizedResponse(w, "Authentication required"); return }
+    orgID := chiRoute.URLParam(r, "id")
+    if strings.TrimSpace(orgID) == "" { utils.WriteBadRequestResponse(w, "organization id required"); return }
+    // Ensure membership and role
+    role, ok := h.requireOrgMember(w, user.ID, orgID)
+    if !ok { return }
+    if role != models.RoleOwner && role != models.RoleAdmin {
+        utils.WriteForbiddenResponse(w, "Only owner/admin can update organization")
+        return
+    }
+    // Parse patch
+    var req struct{
+        Name string `json:"name"`
+        Description string `json:"description"`
+        Avatar string `json:"avatar"`
+        Color string `json:"color"`
+    }
+    if err := utils.ParseJSONBody(r, &req); err != nil { utils.WriteBadRequestResponse(w, "Invalid body"); return }
+    // Load current org (optional)
+    org, err := h.db.GetOrganization(orgID)
+    if err != nil { utils.WriteNotFoundResponse(w, "organization not found"); return }
+    // Apply patch values (only non-empty)
+    if strings.TrimSpace(req.Name) != "" { org.Name = req.Name }
+    if strings.TrimSpace(req.Description) != "" { org.Description = req.Description }
+    if strings.TrimSpace(req.Avatar) != "" { org.Avatar = req.Avatar }
+    if strings.TrimSpace(req.Color) != "" { org.Color = req.Color }
+    if err := h.db.UpdateOrganization(org); err != nil { utils.WriteInternalServerErrorResponse(w, err.Error()); return }
+    utils.WriteSuccessResponse(w, map[string]interface{}{"organization": org})
 }
 
 // GET /api/orgs

@@ -9,6 +9,8 @@ type Organization struct {
     OwnerID   string    `json:"owner_id" db:"owner_id"`
     Description string  `json:"description,omitempty" db:"description"`
     Avatar    string    `json:"avatar,omitempty" db:"avatar"`
+    // UI theme color (hex or named id). Stored as short text in DB.
+    Color     string    `json:"color,omitempty" db:"color"`
     CreatedAt time.Time `json:"created_at" db:"created_at"`
     UpdatedAt time.Time `json:"updated_at" db:"updated_at"`
 }
@@ -29,4 +31,3 @@ type OrganizationMembership struct {
     Role           OrgMemberRole `json:"role" db:"role"`
     CreatedAt      time.Time     `json:"created_at" db:"created_at"`
 }
-

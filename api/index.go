@@ -176,13 +176,14 @@ func setupRoutes(router *chi.Mux, cfg *config.Config, db database.DatabaseInterf
 
 			// 快照管理路由
 			// Organizations & Spaces
-			orgsHandler := handlers.NewOrgsHandler(cfg, db)
-			r.Route("/orgs", func(r chi.Router) {
-				r.Get("/", orgsHandler.ListMyOrganizations)
-				r.Post("/", orgsHandler.CreateOrganization)
-				r.Get("/members", orgsHandler.ListMembers) // expects ?org_id=
-				r.Get("/spaces", orgsHandler.ListSpaces)   // expects ?org_id=
-				r.Post("/spaces", orgsHandler.CreateSpace)
+            orgsHandler := handlers.NewOrgsHandler(cfg, db)
+            r.Route("/orgs", func(r chi.Router) {
+                r.Get("/", orgsHandler.ListMyOrganizations)
+                r.Post("/", orgsHandler.CreateOrganization)
+                r.Put("/{id}", orgsHandler.UpdateOrganization)
+                r.Get("/members", orgsHandler.ListMembers) // expects ?org_id=
+                r.Get("/spaces", orgsHandler.ListSpaces)   // expects ?org_id=
+                r.Post("/spaces", orgsHandler.CreateSpace)
 				r.Put("/spaces/{id}", orgsHandler.UpdateSpace)
 				r.Delete("/spaces/{id}", orgsHandler.DeleteSpace)
 				r.Post("/invite", orgsHandler.InviteMember)
