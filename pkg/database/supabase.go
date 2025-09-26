@@ -363,10 +363,15 @@ func (db *SupabaseDatabase) UpdateCollection(c *models.Collection) error {
 }
 
 func (db *SupabaseDatabase) DeleteCollection(id string) error {
-    _, err := db.makeRequest("PATCH", "/collections?id=eq."+id, map[string]interface{}{
+    // Soft delete the collection
+    if _, err := db.makeRequest("PATCH", "/collections?id=eq."+id, map[string]interface{}{
         "deleted_at": time.Now().Format(time.RFC3339),
-    })
-    return err
+    }); err != nil { return err }
+    // Cascade soft delete to items
+    if _, err := db.makeRequest("PATCH", "/collection_items?collection_id=eq."+id, map[string]interface{}{
+        "deleted_at": time.Now().Format(time.RFC3339),
+    }); err != nil { return err }
+    return nil
 }
 
 func (db *SupabaseDatabase) ListCollectionsBySpace(spaceID string) ([]models.Collection, error) {
@@ -428,7 +433,7 @@ func (db *SupabaseDatabase) DeleteCollectionItem(id string) error {
 }
 
 func (db *SupabaseDatabase) ListItemsByCollection(collectionID string) ([]models.CollectionItem, error) {
-    data, err := db.makeRequest("GET", "/collection_items?collection_id=eq."+collectionID+"&select=*", nil)
+    data, err := db.makeRequest("GET", "/collection_items?collection_id=eq."+collectionID+"&deleted_at=is.null&select=*", nil)
     if err != nil { return nil, err }
     var rows []models.CollectionItem
     if err := json.Unmarshal(data, &rows); err != nil { return nil, err }

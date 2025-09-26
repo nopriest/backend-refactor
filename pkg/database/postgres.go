@@ -656,8 +656,24 @@ func (db *PostgresDatabase) UpdateCollection(c *models.Collection) error {
 }
 
 func (db *PostgresDatabase) DeleteCollection(id string) error {
-    _, err := db.db.Exec(`UPDATE collections SET deleted_at=NOW(), updated_at=NOW() WHERE id=$1`, id)
-    return err
+    tx, err := db.db.Begin()
+    if err != nil { return err }
+    // Soft-delete the collection
+    res1, err := tx.Exec(`UPDATE collections SET deleted_at=NOW(), updated_at=NOW() WHERE id=$1`, id)
+    if err != nil {
+        _ = tx.Rollback()
+        return err
+    }
+    if rows, _ := res1.RowsAffected(); rows == 0 {
+        _ = tx.Rollback()
+        return fmt.Errorf("collection not found")
+    }
+    // Cascade soft-delete to its items
+    if _, err := tx.Exec(`UPDATE collection_items SET deleted_at=NOW(), updated_at=NOW() WHERE collection_id=$1`, id); err != nil {
+        _ = tx.Rollback()
+        return err
+    }
+    return tx.Commit()
 }
 
 func (db *PostgresDatabase) ListCollectionsBySpace(spaceID string) ([]models.Collection, error) {
@@ -710,7 +726,7 @@ func (db *PostgresDatabase) DeleteCollectionItem(id string) error {
 }
 
 func (db *PostgresDatabase) ListItemsByCollection(collectionID string) ([]models.CollectionItem, error) {
-    rows, err := db.db.Query(`SELECT id, collection_id, title, url, fav_icon_url, original_title, ai_generated_title, domain, metadata, position, created_at, updated_at, deleted_at FROM collection_items WHERE collection_id=$1 ORDER BY position ASC, created_at ASC`, collectionID)
+    rows, err := db.db.Query(`SELECT id, collection_id, title, url, fav_icon_url, original_title, ai_generated_title, domain, metadata, position, created_at, updated_at, deleted_at FROM collection_items WHERE collection_id=$1 AND deleted_at IS NULL ORDER BY position ASC, created_at ASC`, collectionID)
     if err != nil { return nil, fmt.Errorf("failed to list items: %w", err) }
     defer rows.Close()
     var list []models.CollectionItem

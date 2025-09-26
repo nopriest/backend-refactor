@@ -204,11 +204,12 @@ func setupRoutes(router *chi.Mux, cfg *config.Config, db database.DatabaseInterf
 				r.Delete("/{id}", collectionsHandler.DeleteCollection)   // requires ?space_id=
 			})
 
-			// Collection Items
-			r.Get("/collections/{id}/items", collectionsHandler.ListItems)
-			r.Post("/collections/{id}/items", collectionsHandler.CreateItem)
-			r.Put("/collection-items/{item_id}", collectionsHandler.UpdateItem)
-			r.Delete("/collection-items/{item_id}", collectionsHandler.DeleteItem)
+            // Collection Items
+            r.Get("/collections/{id}/items", collectionsHandler.ListItems)
+            r.Post("/collections/{id}/items", collectionsHandler.CreateItem)
+            r.Post("/collections/{id}/items/batch", collectionsHandler.CreateItemsBatch)
+            r.Put("/collection-items/{item_id}", collectionsHandler.UpdateItem)
+            r.Delete("/collection-items/{item_id}", collectionsHandler.DeleteItem)
 
 			r.Route("/snapshots", func(r chi.Router) {
 				r.Get("/", snapshotHandler.ListSnapshots)           // 列出快照

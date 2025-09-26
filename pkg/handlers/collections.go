@@ -257,6 +257,49 @@ func (h *CollectionsHandler) CreateItem(w http.ResponseWriter, r *http.Request) 
     utils.WriteSuccessResponse(w, map[string]interface{}{"item": it})
 }
 
+// POST /api/collections/{id}/items/batch
+func (h *CollectionsHandler) CreateItemsBatch(w http.ResponseWriter, r *http.Request) {
+    user, err := middleware.RequireUser(r.Context())
+    if err != nil { utils.WriteUnauthorizedResponse(w, "Authentication required"); return }
+    collectionID := chiRoute.URLParam(r, "id")
+    if strings.TrimSpace(collectionID) == "" { utils.WriteBadRequestResponse(w, "collection id required"); return }
+    coll, err := h.db.GetCollection(collectionID)
+    if err != nil { utils.WriteNotFoundResponse(w, "collection not found"); return }
+    // permission against its space
+    if _, ok := h.requireSpaceEdit(w, user.ID, coll.SpaceID); !ok { return }
+    var req struct { Items []struct {
+        Title string `json:"title"`
+        URL string `json:"url"`
+        FavIconURL string `json:"fav_icon_url"`
+        OriginalTitle string `json:"original_title"`
+        AIGeneratedTitle string `json:"ai_generated_title"`
+        Domain string `json:"domain"`
+        Metadata map[string]interface{} `json:"metadata"`
+        Position int `json:"position"`
+    } `json:"items"` }
+    if err := utils.ParseJSONBody(r, &req); err != nil { utils.WriteBadRequestResponse(w, "Invalid body"); return }
+    if len(req.Items) == 0 { utils.WriteBadRequestResponse(w, "items required"); return }
+    if len(req.Items) > 200 { utils.WriteBadRequestResponse(w, "too many items (max 200)"); return }
+    created := make([]models.CollectionItem, 0, len(req.Items))
+    for _, it := range req.Items {
+        metaJSON, _ := json.Marshal(it.Metadata)
+        row := &models.CollectionItem{
+            CollectionID: collectionID,
+            Title: it.Title,
+            URL: it.URL,
+            FavIconURL: it.FavIconURL,
+            OriginalTitle: it.OriginalTitle,
+            AIGeneratedTitle: it.AIGeneratedTitle,
+            Domain: it.Domain,
+            Metadata: metaJSON,
+            Position: it.Position,
+        }
+        if err := h.db.CreateCollectionItem(row); err != nil { utils.WriteInternalServerErrorResponse(w, err.Error()); return }
+        created = append(created, *row)
+    }
+    utils.WriteSuccessResponse(w, map[string]interface{}{"items": created})
+}
+
 // PUT /api/collection-items/{item_id}
 func (h *CollectionsHandler) UpdateItem(w http.ResponseWriter, r *http.Request) {
     user, err := middleware.RequireUser(r.Context())
