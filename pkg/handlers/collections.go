@@ -126,11 +126,27 @@ func (h *CollectionsHandler) ListCollections(w http.ResponseWriter, r *http.Requ
 func (h *CollectionsHandler) CreateCollection(w http.ResponseWriter, r *http.Request) {
     user, err := middleware.RequireUser(r.Context())
     if err != nil { utils.WriteUnauthorizedResponse(w, "Authentication required"); return }
-    var req struct{ SpaceID, Name, Description, Color, Icon string; Position int }
+    var req struct{
+        SpaceID string `json:"space_id"`
+        Name string `json:"name"`
+        Description string `json:"description"`
+        Color string `json:"color"`
+        Icon string `json:"icon"`
+        Position int `json:"position"`
+    }
     if err := utils.ParseJSONBody(r, &req); err != nil { utils.WriteBadRequestResponse(w, "Invalid body"); return }
-    if strings.TrimSpace(req.SpaceID) == "" || strings.TrimSpace(req.Name) == "" { utils.WriteBadRequestResponse(w, "space_id and name required"); return }
+    if strings.TrimSpace(req.SpaceID) == "" || strings.TrimSpace(req.Name) == "" {
+        utils.WriteBadRequestResponse(w, "space_id and name required"); return
+    }
     if _, ok := h.requireSpaceEdit(w, user.ID, req.SpaceID); !ok { return }
-    c := &models.Collection{ SpaceID: req.SpaceID, Name: req.Name, Description: req.Description, Color: req.Color, Icon: req.Icon, Position: req.Position }
+    c := &models.Collection{
+        SpaceID: req.SpaceID,
+        Name: req.Name,
+        Description: req.Description,
+        Color: req.Color,
+        Icon: req.Icon,
+        Position: req.Position,
+    }
     if err := h.db.CreateCollection(c); err != nil { utils.WriteInternalServerErrorResponse(w, err.Error()); return }
     utils.WriteSuccessResponse(w, map[string]interface{}{"collection": c})
 }
@@ -141,15 +157,30 @@ func (h *CollectionsHandler) UpdateCollection(w http.ResponseWriter, r *http.Req
     if err != nil { utils.WriteUnauthorizedResponse(w, "Authentication required"); return }
     id := chiRoute.URLParam(r, "id")
     if strings.TrimSpace(id) == "" { utils.WriteBadRequestResponse(w, "id required"); return }
-    // load to check space/permission
-    // There is no GetCollection; we can list by space if client includes space_id
-    var req struct{ Name, Description, Color, Icon string; Position int; SpaceID string }
+    var req struct{
+        SpaceID string `json:"space_id"`
+        Name *string `json:"name"`
+        Description *string `json:"description"`
+        Color *string `json:"color"`
+        Icon *string `json:"icon"`
+        Position *int `json:"position"`
+    }
     if err := utils.ParseJSONBody(r, &req); err != nil { utils.WriteBadRequestResponse(w, "Invalid body"); return }
     if strings.TrimSpace(req.SpaceID) == "" { utils.WriteBadRequestResponse(w, "space_id required"); return }
-    if _, ok := h.requireSpaceEdit(w, user.ID, req.SpaceID); !ok { return }
-    c := &models.Collection{ ID: id, SpaceID: req.SpaceID, Name: req.Name, Description: req.Description, Color: req.Color, Icon: req.Icon, Position: req.Position }
-    if err := h.db.UpdateCollection(c); err != nil { utils.WriteInternalServerErrorResponse(w, err.Error()); return }
-    utils.WriteSuccessResponse(w, map[string]interface{}{"collection": c})
+    // load existing
+    existing, err := h.db.GetCollection(id)
+    if err != nil { utils.WriteNotFoundResponse(w, "collection not found"); return }
+    // permission against its (target) space
+    if _, ok := h.requireSpaceEdit(w, user.ID, existing.SpaceID); !ok { return }
+    // patch fields
+    existing.SpaceID = req.SpaceID // allow move across spaces if permissions allow
+    if req.Name != nil { existing.Name = *req.Name }
+    if req.Description != nil { existing.Description = *req.Description }
+    if req.Color != nil { existing.Color = *req.Color }
+    if req.Icon != nil { existing.Icon = *req.Icon }
+    if req.Position != nil { existing.Position = *req.Position }
+    if err := h.db.UpdateCollection(existing); err != nil { utils.WriteInternalServerErrorResponse(w, err.Error()); return }
+    utils.WriteSuccessResponse(w, map[string]interface{}{"collection": existing})
 }
 
 // DELETE /api/collections/{id}
@@ -158,33 +189,37 @@ func (h *CollectionsHandler) DeleteCollection(w http.ResponseWriter, r *http.Req
     if err != nil { utils.WriteUnauthorizedResponse(w, "Authentication required"); return }
     id := chiRoute.URLParam(r, "id")
     spaceID := r.URL.Query().Get("space_id")
-    if strings.TrimSpace(id) == "" || strings.TrimSpace(spaceID) == "" { utils.WriteBadRequestResponse(w, "id and space_id required"); return }
+    if strings.TrimSpace(id) == "" { utils.WriteBadRequestResponse(w, "id required"); return }
+    if strings.TrimSpace(spaceID) == "" {
+        // try load collection to infer space id
+        if c, e := h.db.GetCollection(id); e == nil { spaceID = c.SpaceID }
+    }
+    if strings.TrimSpace(spaceID) == "" { utils.WriteBadRequestResponse(w, "space_id required"); return }
     if _, ok := h.requireSpaceEdit(w, user.ID, spaceID); !ok { return }
     if err := h.db.DeleteCollection(id); err != nil { utils.WriteInternalServerErrorResponse(w, err.Error()); return }
     utils.WriteSuccessResponse(w, map[string]interface{}{"deleted": true, "id": id})
 }
 
-// ============== Collection Items ==============
-
-// GET /api/collections/{id}/items?since=&page=&page_size=
+// GET /api/collections/{id}/items
 func (h *CollectionsHandler) ListItems(w http.ResponseWriter, r *http.Request) {
     user, err := middleware.RequireUser(r.Context())
     if err != nil { utils.WriteUnauthorizedResponse(w, "Authentication required"); return }
     collectionID := chiRoute.URLParam(r, "id")
     if strings.TrimSpace(collectionID) == "" { utils.WriteBadRequestResponse(w, "collection id required"); return }
-    // derive space from collection
     coll, err := h.db.GetCollection(collectionID)
     if err != nil { utils.WriteNotFoundResponse(w, "collection not found"); return }
-    // membership check
-    members, _ := h.db.ListOrganizationMembers(coll.SpaceID)
+    // must be org member
+    space, _ := h.db.GetSpaceByID(coll.SpaceID)
+    if space == nil { utils.WriteNotFoundResponse(w, "space not found"); return }
+    members, _ := h.db.ListOrganizationMembers(space.OrganizationID)
     allowed := false
     for _, m := range members { if m.UserID == user.ID { allowed = true; break } }
     if !allowed { utils.WriteForbiddenResponse(w, "Not a member of organization"); return }
     items, err := h.db.ListItemsByCollection(collectionID)
     if err != nil { utils.WriteInternalServerErrorResponse(w, err.Error()); return }
-    // Optional since/page omitted for brevity here; can mirror collections pagination if needed
     utils.WriteSuccessResponse(w, map[string]interface{}{"items": items})
 }
+
 
 // POST /api/collections/{id}/items
 func (h *CollectionsHandler) CreateItem(w http.ResponseWriter, r *http.Request) {

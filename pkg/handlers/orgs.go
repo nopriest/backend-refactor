@@ -143,6 +143,18 @@ func (h *OrgsHandler) ListMyOrganizations(w http.ResponseWriter, r *http.Request
     if err != nil {
         fmt.Printf("[error] ListMyOrganizations failed for user=%s: %v\n", user.ID, err)
         utils.WriteInternalServerErrorResponse(w, err.Error()); return }
+    // Compute weak ETag: orgs:<user>:<count>:<maxUpdated>
+    var maxUpdated int64
+    for _, o := range orgs {
+        if ts := o.UpdatedAt.UnixMilli(); ts > maxUpdated { maxUpdated = ts }
+    }
+    etag := fmt.Sprintf("W/\"orgs:%s:%d:%d\"", user.ID, len(orgs), maxUpdated)
+    ifNone := r.Header.Get("If-None-Match")
+    w.Header().Set("ETag", etag)
+    if ifNone == etag {
+        w.WriteHeader(http.StatusNotModified)
+        return
+    }
     utils.WriteSuccessResponse(w, map[string]interface{}{ "organizations": orgs })
 }
 
@@ -187,6 +199,17 @@ func (h *OrgsHandler) ListSpaces(w http.ResponseWriter, r *http.Request) {
     if _, ok := h.requireOrgMember(w, user.ID, orgID); !ok { return }
     spaces, err := h.db.ListSpacesByOrganization(orgID)
     if err != nil { utils.WriteInternalServerErrorResponse(w, err.Error()); return }
+    var maxUpdated int64
+    for _, s := range spaces {
+        if ts := s.UpdatedAt.UnixMilli(); ts > maxUpdated { maxUpdated = ts }
+    }
+    etag := fmt.Sprintf("W/\"spaces:%s:%d:%d\"", orgID, len(spaces), maxUpdated)
+    ifNone := r.Header.Get("If-None-Match")
+    w.Header().Set("ETag", etag)
+    if ifNone == etag {
+        w.WriteHeader(http.StatusNotModified)
+        return
+    }
     utils.WriteSuccessResponse(w, map[string]interface{}{ "spaces": spaces })
 }
 
