@@ -44,9 +44,17 @@ type DatabaseInterface interface {
 
     // Collection Items
     CreateCollectionItem(it *models.CollectionItem) error
+    // UpdateCollectionItem updates all provided fields on item; kept for backward compatibility.
+    // Prefer UpdateCollectionItemPartial to avoid overwriting unspecified fields.
     UpdateCollectionItem(it *models.CollectionItem) error
+    // UpdateCollectionItemPartial performs a partial update using the provided patch map.
+    // Allowed keys: "collection_id","title","url","fav_icon_url","original_title",
+    // "ai_generated_title","domain","metadata","position".
+    UpdateCollectionItemPartial(itemID string, patch map[string]interface{}) error
     DeleteCollectionItem(id string) error
     ListItemsByCollection(collectionID string) ([]models.CollectionItem, error)
+    // Idempotency helpers
+    FindItemByCollectionAndNormalizedURL(collectionID, normalizedURL string) (*models.CollectionItem, error)
 
     // Invitations
     CreateInvitation(inv *models.OrganizationInvitation) error

@@ -242,6 +242,18 @@ func (h *CollectionsHandler) CreateItem(w http.ResponseWriter, r *http.Request) 
     }
     if err := utils.ParseJSONBody(r, &req); err != nil { utils.WriteBadRequestResponse(w, "Invalid body"); return }
     metaJSON, _ := json.Marshal(req.Metadata)
+    // Idempotency: compute normalized url (prefer client-provided metadata.normalized_url)
+    var metaMap map[string]interface{}
+    _ = json.Unmarshal(metaJSON, &metaMap)
+    normalizedURL := ""
+    if v, ok := metaMap["normalized_url"].(string); ok { normalizedURL = v }
+    if strings.TrimSpace(normalizedURL) == "" { normalizedURL = strings.ToLower(strings.TrimSpace(req.URL)) }
+    if strings.TrimSpace(normalizedURL) != "" {
+        if ex, err := h.db.FindItemByCollectionAndNormalizedURL(collectionID, normalizedURL); err == nil && ex != nil {
+            utils.WriteSuccessResponse(w, map[string]interface{}{"item": ex})
+            return
+        }
+    }
     it := &models.CollectionItem{
         CollectionID: collectionID,
         Title: req.Title,
@@ -283,6 +295,18 @@ func (h *CollectionsHandler) CreateItemsBatch(w http.ResponseWriter, r *http.Req
     created := make([]models.CollectionItem, 0, len(req.Items))
     for _, it := range req.Items {
         metaJSON, _ := json.Marshal(it.Metadata)
+        // Idempotency for batch: skip existing by normalized_url
+        var meta map[string]interface{}
+        _ = json.Unmarshal(metaJSON, &meta)
+        normalizedURL := ""
+        if v, ok := meta["normalized_url"].(string); ok { normalizedURL = v }
+        if strings.TrimSpace(normalizedURL) == "" { normalizedURL = strings.ToLower(strings.TrimSpace(it.URL)) }
+        if strings.TrimSpace(normalizedURL) != "" {
+            if ex, err := h.db.FindItemByCollectionAndNormalizedURL(collectionID, normalizedURL); err == nil && ex != nil {
+                created = append(created, *ex)
+                continue
+            }
+        }
         row := &models.CollectionItem{
             CollectionID: collectionID,
             Title: it.Title,
@@ -322,18 +346,23 @@ func (h *CollectionsHandler) UpdateItem(w http.ResponseWriter, r *http.Request) 
     coll, err := h.db.GetCollection(req.CollectionID)
     if err != nil { utils.WriteNotFoundResponse(w, "collection not found"); return }
     if _, ok := h.requireSpaceEdit(w, user.ID, coll.SpaceID); !ok { return }
-    // build item for update
-    metaJSON, _ := json.Marshal(req.Metadata)
-    it := &models.CollectionItem{ ID: itemID, CollectionID: req.CollectionID, Metadata: metaJSON }
-    if req.Title != nil { it.Title = *req.Title }
-    if req.URL != nil { it.URL = *req.URL }
-    if req.FavIconURL != nil { it.FavIconURL = *req.FavIconURL }
-    if req.OriginalTitle != nil { it.OriginalTitle = *req.OriginalTitle }
-    if req.AIGeneratedTitle != nil { it.AIGeneratedTitle = *req.AIGeneratedTitle }
-    if req.Domain != nil { it.Domain = *req.Domain }
-    if req.Position != nil { it.Position = *req.Position }
-    if err := h.db.UpdateCollectionItem(it); err != nil { utils.WriteInternalServerErrorResponse(w, err.Error()); return }
-    utils.WriteSuccessResponse(w, map[string]interface{}{"item": it})
+    // Build partial patch to avoid wiping unspecified fields
+    patch := map[string]interface{}{
+        "collection_id": req.CollectionID,
+    }
+    if req.Title != nil { patch["title"] = *req.Title }
+    if req.URL != nil { patch["url"] = *req.URL }
+    if req.FavIconURL != nil { patch["fav_icon_url"] = *req.FavIconURL }
+    if req.OriginalTitle != nil { patch["original_title"] = *req.OriginalTitle }
+    if req.AIGeneratedTitle != nil { patch["ai_generated_title"] = *req.AIGeneratedTitle }
+    if req.Domain != nil { patch["domain"] = *req.Domain }
+    if req.Metadata != nil {
+        metaJSON, _ := json.Marshal(req.Metadata)
+        patch["metadata"] = metaJSON
+    }
+    if req.Position != nil { patch["position"] = *req.Position }
+    if err := h.db.UpdateCollectionItemPartial(itemID, patch); err != nil { utils.WriteInternalServerErrorResponse(w, err.Error()); return }
+    utils.WriteSuccessResponse(w, map[string]interface{}{"updated": true, "id": itemID})
 }
 
 // DELETE /api/collection-items/{item_id}?collection_id=

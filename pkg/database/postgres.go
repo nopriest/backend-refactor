@@ -715,8 +715,67 @@ func (db *PostgresDatabase) CreateCollectionItem(it *models.CollectionItem) erro
 }
 
 func (db *PostgresDatabase) UpdateCollectionItem(it *models.CollectionItem) error {
+    // Backward-compatible full update. Note: Does NOT change collection_id.
     _, err := db.db.Exec(`UPDATE collection_items SET title=$1, url=$2, fav_icon_url=$3, original_title=$4, ai_generated_title=$5, domain=$6, metadata=$7, position=$8, updated_at=NOW() WHERE id=$9`,
         it.Title, it.URL, it.FavIconURL, it.OriginalTitle, it.AIGeneratedTitle, it.Domain, it.Metadata, it.Position, it.ID)
+    return err
+}
+
+// UpdateCollectionItemPartial performs a partial update, including optional collection_id move.
+func (db *PostgresDatabase) UpdateCollectionItemPartial(itemID string, patch map[string]interface{}) error {
+    if strings.TrimSpace(itemID) == "" { return fmt.Errorf("item id required") }
+    // Build dynamic SET clause safely
+    setClauses := make([]string, 0, 10)
+    args := make([]interface{}, 0, 10)
+    idx := 1
+
+    // whitelist keys -> column names
+    add := func(col string, val interface{}) {
+        setClauses = append(setClauses, fmt.Sprintf("%s=$%d", col, idx))
+        args = append(args, val)
+        idx++
+    }
+
+    for k, v := range patch {
+        switch k {
+        case "collection_id":
+            if s, ok := v.(string); ok && strings.TrimSpace(s) != "" { add("collection_id", s) }
+        case "title":
+            if v != nil { add("title", v) }
+        case "url":
+            if v != nil { add("url", v) }
+        case "fav_icon_url":
+            if v != nil { add("fav_icon_url", v) }
+        case "original_title":
+            if v != nil { add("original_title", v) }
+        case "ai_generated_title":
+            if v != nil { add("ai_generated_title", v) }
+        case "domain":
+            if v != nil { add("domain", v) }
+        case "metadata":
+            // Accept either []byte (JSON) or any value that can marshal to JSON
+            switch vv := v.(type) {
+            case []byte:
+                add("metadata", vv)
+            default:
+                b, _ := json.Marshal(v)
+                add("metadata", b)
+            }
+        case "position":
+            add("position", v)
+        }
+    }
+    if len(setClauses) == 0 {
+        // Nothing to update
+        return nil
+    }
+    // Always bump updated_at
+    setClauses = append(setClauses, "updated_at=NOW()")
+
+    // WHERE id=$N
+    args = append(args, itemID)
+    query := fmt.Sprintf("UPDATE collection_items SET %s WHERE id=$%d", strings.Join(setClauses, ", "), idx)
+    _, err := db.db.Exec(query, args...)
     return err
 }
 
@@ -738,6 +797,34 @@ func (db *PostgresDatabase) ListItemsByCollection(collectionID string) ([]models
         list = append(list, it)
     }
     return list, nil
+}
+
+// FindItemByCollectionAndNormalizedURL checks for an existing item by metadata->>'normalized_url' or normalized url of 'url'
+func (db *PostgresDatabase) FindItemByCollectionAndNormalizedURL(collectionID, normalizedURL string) (*models.CollectionItem, error) {
+    if strings.TrimSpace(collectionID) == "" || strings.TrimSpace(normalizedURL) == "" { return nil, fmt.Errorf("invalid args") }
+    // First try metadata->>'normalized_url'
+    var it models.CollectionItem
+    err := db.db.QueryRow(`SELECT id, collection_id, title, url, fav_icon_url, original_title, ai_generated_title, domain, metadata, position, created_at, updated_at, deleted_at
+        FROM collection_items WHERE collection_id=$1 AND deleted_at IS NULL AND metadata->>'normalized_url'=$2 LIMIT 1`, collectionID, normalizedURL).
+        Scan(&it.ID, &it.CollectionID, &it.Title, &it.URL, &it.FavIconURL, &it.OriginalTitle, &it.AIGeneratedTitle, &it.Domain, &it.Metadata, &it.Position, &it.CreatedAt, &it.UpdatedAt, &it.DeletedAt)
+    if err == nil { return &it, nil }
+    // Fallback: compare against normalized url of column url
+    rows, e2 := db.db.Query(`SELECT id, collection_id, title, url, fav_icon_url, original_title, ai_generated_title, domain, metadata, position, created_at, updated_at, deleted_at
+        FROM collection_items WHERE collection_id=$1 AND deleted_at IS NULL`, collectionID)
+    if e2 != nil { return nil, e2 }
+    defer rows.Close()
+    for rows.Next() {
+        var row models.CollectionItem
+        if err := rows.Scan(&row.ID, &row.CollectionID, &row.Title, &row.URL, &row.FavIconURL, &row.OriginalTitle, &row.AIGeneratedTitle, &row.Domain, &row.Metadata, &row.Position, &row.CreatedAt, &row.UpdatedAt, &row.DeletedAt); err == nil {
+            if strings.TrimSpace(row.URL) != "" {
+                // simple normalization
+                u := strings.TrimSpace(row.URL)
+                u = strings.ToLower(u)
+                if u == normalizedURL { return &row, nil }
+            }
+        }
+    }
+    return nil, fmt.Errorf("not found")
 }
 
 func (db *PostgresDatabase) GetInvitationByToken(token string) (*models.OrganizationInvitation, error) {

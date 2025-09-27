@@ -427,6 +427,29 @@ func (db *SupabaseDatabase) UpdateCollectionItem(it *models.CollectionItem) erro
     return err
 }
 
+// UpdateCollectionItemPartial performs a partial update via REST PATCH.
+func (db *SupabaseDatabase) UpdateCollectionItemPartial(itemID string, patch map[string]interface{}) error {
+    if strings.TrimSpace(itemID) == "" { return fmt.Errorf("item id required") }
+    body := map[string]interface{}{}
+    for k, v := range patch {
+        switch k {
+        case "collection_id", "title", "url", "fav_icon_url", "original_title", "ai_generated_title", "domain", "position":
+            body[k] = v
+        case "metadata":
+            switch vv := v.(type) {
+            case []byte:
+                body[k] = string(vv)
+            default:
+                // allow map/object
+                body[k] = v
+            }
+        }
+    }
+    if len(body) == 0 { return nil }
+    _, err := db.makeRequest("PATCH", "/collection_items?id=eq."+itemID, body)
+    return err
+}
+
 func (db *SupabaseDatabase) DeleteCollectionItem(id string) error {
     _, err := db.makeRequest("PATCH", "/collection_items?id=eq."+id, map[string]interface{}{"deleted_at": time.Now().Format(time.RFC3339)})
     return err
@@ -438,6 +461,32 @@ func (db *SupabaseDatabase) ListItemsByCollection(collectionID string) ([]models
     var rows []models.CollectionItem
     if err := json.Unmarshal(data, &rows); err != nil { return nil, err }
     return rows, nil
+}
+
+// FindItemByCollectionAndNormalizedURL uses a best-effort filter against metadata->>normalized_url via REST; falls back to scan
+func (db *SupabaseDatabase) FindItemByCollectionAndNormalizedURL(collectionID, normalizedURL string) (*models.CollectionItem, error) {
+    // Try direct filter (PostgREST supports jsonb ->> operator in query params)
+    if strings.TrimSpace(collectionID) == "" || strings.TrimSpace(normalizedURL) == "" {
+        return nil, fmt.Errorf("invalid args")
+    }
+    // Attempt direct query; ignore errors and fallback
+    if data, err := db.makeRequest("GET", "/collection_items?collection_id=eq."+collectionID+"&deleted_at=is.null&select=*&metadata->>normalized_url=eq."+normalizedURL, nil); err == nil {
+        var rows []models.CollectionItem
+        if e2 := json.Unmarshal(data, &rows); e2 == nil && len(rows) > 0 {
+            return &rows[0], nil
+        }
+    }
+    // Fallback scan of collection
+    items, err := db.ListItemsByCollection(collectionID)
+    if err != nil { return nil, err }
+    for _, it := range items {
+        // try metadata first
+        var meta map[string]interface{}
+        _ = json.Unmarshal(it.Metadata, &meta)
+        if v, ok := meta["normalized_url"].(string); ok && v == normalizedURL { return &it, nil }
+        if it.URL == normalizedURL { return &it, nil }
+    }
+    return nil, fmt.Errorf("not found")
 }
 // CreateUser 创建用户
 func (db *SupabaseDatabase) CreateUser(user *models.User) error {
